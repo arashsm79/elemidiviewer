@@ -14,8 +14,6 @@
 //shared memory
 GuiStatus *cacheStatus;
 GuiStatus *playStatus;
-GuiStatus *filePlayStatus;
-int *isMainOpen;
 
 
 
@@ -37,16 +35,28 @@ GtkWidget *menu_new;
 GtkWidget *menu_quit;
 GtkWidget *menu_about;
 
-//child process that will play the music
-pid_t pidFirst;
 
-GtkWidget *main_gridButton[1024];
+//process ids
+pid_t pid_child;
+pid_t *pid_parent;
+
+GtkWidget *main_gridButton[10000];
 int	main_gridButtonCount = 0;
 
 
+//signals
+void sigquit_child();
+void sigcorrupt();
+void sigtype2();
+void sigendoftrack();
+void sigfilenotfound();
+void siggeneralerror();
+
+
 void on_destroy();
-void sigquit();
 void on_event_grid_row_clicked(GtkButton *);
+void showDialog(char str[]);
+void clearGrid();
 
 int main(int argc, char *argv[]) {
 
@@ -85,11 +95,10 @@ int main(int argc, char *argv[]) {
 	playStatus = mmap(NULL, sizeof(GuiStatus), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 	*playStatus = STATUS_PAUSE;
 
-    filePlayStatus = mmap(NULL, sizeof(GuiStatus), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-	*filePlayStatus = STATUS_PROCESSING;
+    
 
-	isMainOpen = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-	*isMainOpen = 1;
+	pid_parent = mmap(NULL, sizeof(pid_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	*pid_parent = 1;
 
 
     //setting up css
@@ -114,7 +123,7 @@ void on_destroy()
 {
 	//set the flag
 	//*isMainOpen = 0;
-    kill(pidFirst, SIGQUIT);
+    kill(pid_child, SIGQUIT);
 	gtk_main_quit();
 }
 
@@ -134,8 +143,7 @@ void on_main_pause_clicked(GtkButton *b)
 
 void on_event_grid_row_clicked(GtkButton *b)
 {
-	printf("You selected: %s\n", gtk_button_get_label (b));
-
+    showDialog(gtk_button_get_label (b));
 }
 
 //file chooser
@@ -143,28 +151,48 @@ void on_event_grid_row_clicked(GtkButton *b)
 void on_main_fileChooser_clicked(GtkButton *f)
 {
 
-    pidFirst = fork();
-    if(pidFirst == 0)
+    //clean up everything before opening up another file
+    clearGrid();
+    
+
+    //creating a child process for playing the midi
+    pid_child = fork();
+    if(pid_child == 0)
     {
         //FIRST CHILD
-        signal(SIGQUIT, sigquit);
-        *cacheStatus = openMidiFileAndCreateEventCashe("believer.mid");
-        *filePlayStatus = playMidiFile(playStatus);
-        exit(0);
+        signal(SIGQUIT, sigquit_child);
+        *cacheStatus = openMidiFileAndCreateEventCashe("music.mid", pid_parent);
+        
+        //start playing the midi file
+        if(*cacheStatus == STATUS_DONE)
+        { 
+            playMidiFile(playStatus, pid_parent);
+        }else
+        {
+            kill(*pid_parent, CORRUPTMIDI);
+        }
+        
      
-    }else if(pidFirst > 0)
+    }else if(pid_child > 0)
     {
         //parent (main)
+        *pid_parent = getpid();
+        signal(CORRUPTMIDI, sigcorrupt);
+        signal(ENDOFTRACKERROR, sigendoftrack);
+        signal(TYPE2MIDI, sigtype2);
+        signal(FILENOTFOUND, sigfilenotfound);
+        signal(GENERALERROR, siggeneralerror);
+
+
+
         while(1)
         { 
             if(*cacheStatus == STATUS_DONE)
             {
-
                 FILE *f1 = fopen("cachedEvents.txt", "r");
                 if (f1 == NULL ) 
                 {
-                    printf("File cachedEvents.txt not found\n");
-                    //EXIT_FAILURE
+                    showDialog("File cachedEvents.txt not found!\n");
                     return;
                 }
 
@@ -177,7 +205,7 @@ void on_main_fileChooser_clicked(GtkButton *f)
                     rowStr[strlen(rowStr)-1] = 0; // remove newline byte
                     gtk_grid_insert_row (GTK_GRID(main_eventGrid), main_gridButtonCount);
 
-            //		A button can be freed by the function 'gtk_container_remove ()'
+                    //A button can be freed by the function 'gtk_container_remove ()'
                     main_gridButton[main_gridButtonCount] = gtk_button_new_with_label (rowStr);
                     gtk_button_set_alignment (GTK_BUTTON(main_gridButton[main_gridButtonCount]), 0.0, 0.5); // hor left, ver center
                     
@@ -192,28 +220,65 @@ void on_main_fileChooser_clicked(GtkButton *f)
                 }
                 fclose(f1);
                 gtk_widget_show_all(main_window);
-                break;
+                return;
+
             }else if(*cacheStatus == STATUS_FAILED)
             {
-                    //EXIT_FAILURE
-                break;
+
+                //something has gone wrong
+                return;
             }
              
         }
     }else
     {
-        //EXIT_FAILURE
+        showDialog("An error occured while creating a new process!");
         return;
     }
 
     
 }
 //signals
-void sigquit() 
+void sigquit_child() 
 {
     on_midiClosed(); 
     exit(0); 
-} 
+}
+
+void sigcorrupt() 
+{
+    *cacheStatus = STATUS_FAILED;
+    kill(pid_child, SIGQUIT);
+    showDialog("MIDI file is corrupted!");
+}
+
+void sigtype2() 
+{
+    *cacheStatus = STATUS_FAILED;
+    kill(pid_child, SIGQUIT);
+    showDialog("MIDI file is type 2 which is not supported!");
+}
+
+void sigendoftrack() 
+{
+    *cacheStatus = STATUS_FAILED;
+    kill(pid_child, SIGQUIT);
+    showDialog("There seems to be a problem with the End of Track event!");
+}
+void sigfilenotfound() 
+{
+    *cacheStatus = STATUS_FAILED;
+    kill(pid_child, SIGQUIT);
+    showDialog("Coudln't open the file!");
+}
+
+void siggeneralerror() 
+{
+    *cacheStatus = STATUS_FAILED;
+    kill(pid_child, SIGQUIT);
+    showDialog("An error occured while parsing the file!");
+}
+
 //menu buttons
 void on_menu_new_activate(GtkMenuItem *m)
 {
@@ -230,8 +295,32 @@ void on_menu_about_activate(GtkMenuItem *m)
 
 }
 
+//////////////////
+
+void showDialog(char str[])
+{
+    GtkDialogFlags flags = GTK_DIALOG_DESTROY_WITH_PARENT;
+	GtkWidget *dialog = gtk_message_dialog_new (GTK_WINDOW(main_window),
+                                 flags,
+                                 GTK_MESSAGE_ERROR,
+                                 GTK_BUTTONS_CLOSE,
+                                 "%s", str);
+	gtk_dialog_run (GTK_DIALOG (dialog));
+	gtk_widget_destroy (dialog);
+}
+
+////////////////////
+
+void clearGrid()
+{
+    for(int i = 0; i < main_gridButtonCount; i++)
+    {
+        gtk_container_remove(GTK_CONTAINER(main_eventGrid), main_gridButton[i]);            
+    }
+}
 //progress bar
 
 	// gtk_progress_bar_set_fraction 
 	// 		(GTK_PROGRESS_BAR(main_progressBar), (gdouble) 1.00 );
 
+    // gtk_widget_set_sensitive(main_play, FALSE);

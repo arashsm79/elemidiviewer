@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 #include <time.h>
 #include "beep.h"
@@ -14,9 +15,9 @@
 //#include "intro.h"
 
 //global flags
-GuiStatus midiFileFlagStatus = STATUS_OPEN;
-GuiStatus cacheFileFlagStatus = STATUS_OPEN;
-GuiStatus memoryCleanFlagStatus = STATUS_UNCLEAN;
+GuiStatus midiFileFlagStatus = STATUS_CLOSE;
+GuiStatus cacheFileFlagStatus = STATUS_CLOSE;
+GuiStatus memoryCleanFlagStatus = STATUS_CLEANED;
 
 //global prototypes
 void playMidiNotes(Note *notesArray, size_t size, GuiStatus *);
@@ -28,13 +29,14 @@ NoteSequence *noteSequence;
 FILE *midiFile;
 MidiHeader midiHeader;
 FILE *midiEventCacheFile;
+unsigned int trackTotalBytes = 0;
 
-
+pid_t *pid_parent;
 //opens the given midi file and creates an event cache
-GuiStatus openMidiFileAndCreateEventCashe(char *filePath)
+GuiStatus openMidiFileAndCreateEventCashe(char *filePath, pid_t *ppid)
 {
     unsigned int readVariableLengthValue(FILE *midiFile);
-    MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numberOfNotes);
+    MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numberOfNotes, unsigned int);
     void ei_ui_fread(unsigned int *ptr, size_t size, size_t n, FILE *streamPtr);
     Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOfNotes, MidiCurrentStatus *, FILE *);
     void cleanUpAllocatedSpace(MidiTrack *tracks,unsigned int numberOfTracks ,NoteSequence *noteSequence);
@@ -44,24 +46,28 @@ GuiStatus openMidiFileAndCreateEventCashe(char *filePath)
     // uncomment the include path
     // playIntro();
     
+    pid_parent = ppid;
+
+    
     //open a midi file
     midiFile = fopen(filePath, "rb");
     if(midiFile == NULL)
     {
-        printf("An erorr occured when opening the file!\n");
-        return STATUS_FAILED;
+        kill(*pid_parent, FILENOTFOUND);
     }
+    midiFileFlagStatus = STATUS_OPEN;
 
     //create a new file for writing out the events
     midiEventCacheFile = fopen("cachedEvents.txt", "w");
+
     if(midiEventCacheFile == NULL)
     {
-        printf("An erorr occured when creating the event cache file!\n");
-        return STATUS_FAILED;
+        kill(*pid_parent, FILENOTFOUND);
     }
+    cacheFileFlagStatus = STATUS_OPEN;
+
     // _+_+_+_+_+( PHASE II )+_+_+_+_+_
     //print the midi file's header
-    midiHeader; 
     printMidiHeader(&midiHeader, midiFile, midiEventCacheFile);
 
     //setting the read data to  a midi current status struct
@@ -87,30 +93,42 @@ GuiStatus openMidiFileAndCreateEventCashe(char *filePath)
         midiCurrentStatus.ticksPerFrame = midiHeader.ticksPerFrame;
     }
     
-
     // _+_+_+_+_+( PHASE III )+_+_+_+_+_
     //initialize the tracks and populate them with events
     tracks = calloc(midiHeader.tracks, sizeof(MidiTrack));
     //there is a note sequence for every track
     noteSequence = calloc(midiHeader.tracks, sizeof(NoteSequence));
 
+    if(tracks == NULL || noteSequence == NULL)
+        kill(*pid_parent, GENERALERROR);
+
+
+    memoryCleanFlagStatus = STATUS_UNCLEAN;
+
     for(int i = 0; i < midiHeader.tracks; i++)
     {
-        char chunkID[4];
+        char chunkID[5];
         //read 4 bytes
         fread(&chunkID, 1, 4, midiFile);
-        fprintf(midiEventCacheFile, "%-22s -> %s \n", "Chunk Type", chunkID);
+        chunkID[5] = '\0';
+        if(strstr(chunkID, "MTrk") == NULL)
+        {
+            kill(*pid_parent, CORRUPTMIDI);
+        }
+
+        fprintf(midiEventCacheFile, "%-22s -> %4s \n", "Chunk Type", chunkID);
 
         unsigned int trackSize;
         ei_ui_fread(&trackSize, sizeof(char), 4, midiFile);
         fprintf(midiEventCacheFile, "%-22s -> %u bytes\n", "Track Legnth", trackSize);
 
         //reads all of the contents of the track
-        tracks[i].midiEvents = readTrackEvents(midiFile, &(tracks[i].numberOfEvents), &(noteSequence[i].numberOfNotes));
+        tracks[i].midiEvents = readTrackEvents(midiFile, &(tracks[i].numberOfEvents), &(noteSequence[i].numberOfNotes), trackSize);
 
 
         //creates an array of notes using note on and note off events and parse other events
         noteSequence[i].notes = composeNotes(tracks[i].midiEvents, tracks[i].numberOfEvents, noteSequence[i].numberOfNotes, &midiCurrentStatus, midiEventCacheFile);
+    
     }
     
     //closing the event cache file
@@ -119,6 +137,8 @@ GuiStatus openMidiFileAndCreateEventCashe(char *filePath)
     //close the midi file stream
     fclose(midiFile);
     midiFileFlagStatus = STATUS_CLOSE;
+
+
     return STATUS_DONE;
 }
 
@@ -126,11 +146,12 @@ GuiStatus openMidiFileAndCreateEventCashe(char *filePath)
 ////////////////////////////////////////
 ////////////////////////////////////////
 
-GuiStatus playMidiFile(GuiStatus *playStatus)
+void playMidiFile(GuiStatus *playStatus, pid_t *ppid)
 { 
     //prototypes
     void cleanUpAllocatedSpace(MidiTrack *tracks,unsigned int numberOfTracks ,NoteSequence *noteSequence);
     // _+_+_+_+_+( PHASE IV )+_+_+_+_+_
+    pid_parent = ppid;
 
     for(int i = 0; i < midiHeader.tracks; i++)
     {
@@ -141,9 +162,8 @@ GuiStatus playMidiFile(GuiStatus *playStatus)
     // _+_+_+_+_+( CLEAN UP )+_+_+_+_+_
     cleanUpAllocatedSpace(tracks,midiHeader.tracks ,noteSequence);
     memoryCleanFlagStatus = STATUS_CLEANED;
+    exit(EXIT_SUCCESS);
 
-
-    return STATUS_DONE;
 }
 ////////////////////////////////////////
 ////////////////////////////////////////
@@ -617,7 +637,10 @@ void findCorrespondingNoteOn(Note *noteArray, size_t noteCount, unsigned int not
     {
         if(noteArray[i].midiNoteNumber == noteNumber)
         {
-            noteArray[i].length = ((playTime - noteArray[i].playTime) * midiCurrentStatus->msPerTick) / 1000;
+            if(noteArray[i].velocity == 0)
+                noteArray[i].length = 0;
+            else
+                noteArray[i].length = ((playTime - noteArray[i].playTime) * midiCurrentStatus->msPerTick) / 1000;
             return;
         }
     }
@@ -629,7 +652,7 @@ void findCorrespondingNoteOn(Note *noteArray, size_t noteCount, unsigned int not
 ////////////////////////////////////////
 
 
-MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numberOfNotes)
+MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numberOfNotes, unsigned int trackSize)
 {
     //prototypes
     unsigned int readVariableLengthValue(FILE *midiFile);
@@ -643,6 +666,7 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
     size_t trackEventCountBuffer = 100;
     MidiEvent *midiEvents = calloc(trackEventCountBuffer, sizeof(MidiEvent));
 
+    trackTotalBytes = 0;
 
 
     //read delta time
@@ -653,6 +677,8 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
     unsigned int previousEventCode; //for running status
     //read one byte
     ei_ui_fread(&eventCode, 1, 1, midiFile);
+    trackTotalBytes++;
+
 
 
     /*This meta event associates a MIDI channel with following meta events. It's effect is terminated by another MIDI Channel Prefix event or any non- Meta event.
@@ -661,7 +687,7 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
 
 
     //read events until end of track
-    while(1)
+    while(trackTotalBytes <= trackSize)
     {
         //get the first 4 bit of event code from right (mask = 11110000)
         unsigned int first4BitOfEventCode = eventCode & (0xF0);
@@ -682,6 +708,8 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
                 unsigned int metaEventType;
                 //read one byte
                 ei_ui_fread(&metaEventType, 1, 1, midiFile);
+                trackTotalBytes++;
+
 
                 //setting the event type value
                 midiEvents[trackEventCount].metaEvent.specificEventType = metaEventType;
@@ -698,6 +726,8 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
                 {
                     //read one byte
                     ei_ui_fread(&metaEventLength, 1, 1, midiFile);
+                    trackTotalBytes++;
+                    
                 }
                 midiEvents[trackEventCount].metaEvent.length = metaEventLength;
 
@@ -705,6 +735,11 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
                 //break if it reaches the end of track
                 if(metaEventType == END_OF_TRACK)
                 {
+                    deltaTime = readVariableLengthValue(midiFile);
+                    if(trackTotalBytes-1 != trackSize)
+                    {
+                        kill(*pid_parent, ENDOFTRACKERROR);
+                    }
                     *numberOfEvents = trackEventCount;
                     *numberOfNotes = noteCount;
                     return midiEvents;
@@ -714,6 +749,9 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
                 //read and set data
                 midiEvents[trackEventCount].metaEvent.data = calloc(metaEventLength, sizeof(char));
                 fread(midiEvents[trackEventCount].metaEvent.data, sizeof(char), metaEventLength, midiFile);
+
+                trackTotalBytes += metaEventLength;
+
 
 
 
@@ -741,6 +779,8 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
                 //read and set the data
                 midiEvents[trackEventCount].sysExEvent.data = calloc(sysExLength, sizeof(char));
                 fread(midiEvents[trackEventCount].sysExEvent.data, sizeof(char), sysExLength, midiFile);
+
+                trackTotalBytes += sysExLength;
 
                 //set the channel of curent event
                 midiEvents[trackEventCount].sysExEvent.channelNumber = midiChannelPrefix;    
@@ -770,6 +810,9 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
             unsigned int param1;
             //read one byte
             ei_ui_fread(&param1, 1, 1, midiFile);
+
+            trackTotalBytes += 1;
+
             midiEvents[trackEventCount].channelEvent.param1 = param1;
 
             if(first4BitOfEventCode != PROGRAM_CHNG && first4BitOfEventCode != CHANNEL_AFTERTOUCH)
@@ -778,6 +821,8 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
                 unsigned int param2;
                 //read one byte
                 ei_ui_fread(&param2, 1, 1, midiFile);
+                trackTotalBytes += 1;
+
                 midiEvents[trackEventCount].channelEvent.param2 = param2;
 
                 //if the velocity of a noteon event was zero, turn in into a note off
@@ -820,6 +865,9 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
                 unsigned int param2;
                 //read one byte
                 ei_ui_fread(&param2, 1, 1, midiFile);
+
+                trackTotalBytes += 1;
+
                 midiEvents[trackEventCount].channelEvent.param2 = param2;
 
                 //if the velocity of a noteon event was zero, turn in into a note off
@@ -862,12 +910,16 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
         }
         //read next delta time
         deltaTime = readVariableLengthValue(midiFile);
-        //fread(&deltaTime, 1, 1, midiFile);
+
         midiEvents[trackEventCount].deltaTime = deltaTime;
 
         // the next event code
-        ei_ui_fread(&eventCode, 1, 1, midiFile); 
+        ei_ui_fread(&eventCode, 1, 1, midiFile);
+        trackTotalBytes += 1;
+
     }
+    //if the program reaches this part it means that it hasn't found end of track event within the bounds of track length
+    kill(*pid_parent, ENDOFTRACKERROR);
 }
 ////////////////////////////////////////
 ////////////////////////////////////////
@@ -881,6 +933,7 @@ unsigned int readVariableLengthValue(FILE *midiFile)
 	int c;
 
 	ei_ui_fread(&c, sizeof(char), 1, midiFile);
+    trackTotalBytes++;
 
 	final = c;
 
@@ -890,6 +943,8 @@ unsigned int readVariableLengthValue(FILE *midiFile)
 		do
         {
 			ei_ui_fread(&c, sizeof(char), 1, midiFile);
+            trackTotalBytes++;
+
 			final = (final << 7) + (c & 127);
 		} while(c & 128);
 	}
@@ -939,16 +994,34 @@ void readHeaderChunk(MidiHeader *midiHeader, FILE *fptr)
 
     //read 32 bits
     fread(&(midiHeader->chunkType), 1, 4, fptr);
-   
+    midiHeader->chunkType[5] = '\0';
+    if(strstr(midiHeader->chunkType, "MThd") == NULL)
+    {
+        kill(*pid_parent, CORRUPTMIDI);
+    }
+    
+    
     //read 32 bits
     ei_ui_fread(&(midiHeader->length), 4, 1, fptr);
 
+    if(midiHeader->length != 6)
+    {
+        kill(*pid_parent, CORRUPTMIDI);
+        
+    }
+
     //read 16 bits
     ei_ui_fread(&(midiHeader->format), 1, 2, fptr);
-
+    if(midiHeader->format < 0 || midiHeader->format > 2)
+    {
+        kill(*pid_parent, CORRUPTMIDI);
+    }
     //read 16 bits
     ei_ui_fread(&(midiHeader->tracks), 1, 2, fptr);
-
+    if(midiHeader->tracks < 1 || midiHeader->tracks > 65535)
+    {
+        kill(*pid_parent, CORRUPTMIDI);
+    }
     //read 16 bits
     ei_ui_fread(&(midiHeader->devision), 1, 2, fptr);
 
@@ -984,7 +1057,7 @@ void readHeaderChunk(MidiHeader *midiHeader, FILE *fptr)
     // a controll statement for header chunks larger than 6 bytes
     if(midiHeader->length > 6)
     {
-        printf("* Warning: This is not a standard Midi File!");
+        kill(*pid_parent, GENERALERROR);
         int numberOfBytesOfAdditionalInformationInHeader = midiHeader->length - 6;
         int additionalInformationInHeader;
         fread(&additionalInformationInHeader, 1, numberOfBytesOfAdditionalInformationInHeader, fptr);

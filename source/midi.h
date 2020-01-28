@@ -109,7 +109,7 @@ typedef struct
 // /* Header Decleration */
 typedef struct
 {
-	char chunkType[4];
+	char chunkType[5];
 
     unsigned int length;
 
