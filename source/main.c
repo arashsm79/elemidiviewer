@@ -12,7 +12,7 @@ int main()
     unsigned int readVariableLengthValue(FILE *midiFile);
     MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numberOfNotes);
     void ei_ui_fread(unsigned int *ptr, size_t size, size_t n, FILE *streamPtr);
-    Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOfNotes, MidiCurrentStatus *);
+    Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOfNotes, MidiCurrentStatus *, FILE *);
     void cleanUpAllocatedSpace(MidiTrack *tracks,unsigned int numberOfTracks ,NoteSequence *noteSequence);
 
     // _+_+_+_+_+( PHASE I )+_+_+_+_+_
@@ -20,18 +20,24 @@ int main()
     //playIntro();
     
     //open a midi file
-    FILE *midiFile = fopen("music.mid", "rb");
+    FILE *midiFile = fopen("office.mid", "rb");
     if(midiFile == NULL)
     {
-        printf("Erorr Opening File!\n");
+        printf("An erorr occured when opening the file!\n");
         return 1;
     }
 
-
+    //create a new file for writing out the events
+    FILE *midiEventCacheFile = fopen("cachedEvents.txt", "w");
+    if(midiEventCacheFile == NULL)
+    {
+        printf("An erorr occured when creating the event cache file!\n");
+        return 1;
+    }
     // _+_+_+_+_+( PHASE II )+_+_+_+_+_
     //print the midi file's header
     MidiHeader midiHeader; 
-    printMidiHeader(&midiHeader, midiFile);
+    printMidiHeader(&midiHeader, midiFile, midiEventCacheFile);
 
     //setting the read data to  a midi current status struct
     //the default tempo is 120BPM that translates to 60000000 / 120 = 500000 microseconds per quarter note
@@ -69,20 +75,23 @@ int main()
         char chunkID[4];
         //read 4 bytes
         fread(&chunkID, 1, 4, midiFile);
+        fprintf(midiEventCacheFile, "%-22s -> %s \n", "Chunk Type", chunkID);
 
         unsigned int trackSize;
         ei_ui_fread(&trackSize, sizeof(char), 4, midiFile);
+        fprintf(midiEventCacheFile, "%-22s -> %u bytes\n", "Track Legnth", trackSize);
 
         //reads all of the contents of the track
         tracks[i].midiEvents = readTrackEvents(midiFile, &(tracks[i].numberOfEvents), &(noteSequence[i].numberOfNotes));
 
 
         //creates an array of notes using note on and note off events and parse other events
-        noteSequence[i].notes = composeNotes(tracks[i].midiEvents, tracks[i].numberOfEvents, noteSequence[i].numberOfNotes, &midiCurrentStatus);
+        noteSequence[i].notes = composeNotes(tracks[i].midiEvents, tracks[i].numberOfEvents, noteSequence[i].numberOfNotes, &midiCurrentStatus, midiEventCacheFile);
     }
     
 
-
+    //closing the event cache file
+    fclose(midiEventCacheFile);
 
     // _+_+_+_+_+( PHASE IV )+_+_+_+_+_
     for(int i = 0; i < midiHeader.tracks; i++)
@@ -135,7 +144,7 @@ void cleanUpAllocatedSpace(MidiTrack *tracks,unsigned int numberOfTracks ,NoteSe
 ////////////////////////////////////////
 ////////////////////////////////////////
 //this functions matches note of events with their corresponding note on events and alculates their length and returns an array of notes 
-Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOfNotes, MidiCurrentStatus *midiCurrentStatus)
+Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOfNotes, MidiCurrentStatus *midiCurrentStatus, FILE *midiEventCacheFile)
 {
     //prototypes
     float turnMidiNoteNumberToFrequency(unsigned int);
@@ -153,11 +162,20 @@ Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOf
         //ad the current events delta time to total Playtime
         playTime += midiEvents[i].deltaTime;
 
+        //print the current events delta time
+        fprintf(midiEventCacheFile, "%-10u:",midiEvents[i].deltaTime);
+
+
+
         //control statements for handling midi events
         switch (midiEvents[i].eventType)
         {
         //Meta Event
         case META_EVENT:
+
+            //print the current events channel
+            fprintf(midiEventCacheFile, "(%-2u) ",midiEvents[i].metaEvent.channelNumber);
+
             switch (midiEvents[i].metaEvent.specificEventType)
             {
             case SET_TEMPO:
@@ -179,56 +197,110 @@ Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOf
                         SubFramesPerPPQN = SubFramesPerQuarterNote / TimeBase
                         MicrosPerPPQN = SubFramesPerPPQN * Frames * SubFrames*/
                 }
+
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s -> %u", "Set Tempo", newTempo);
+
                 break;
 
             //the rest doesnt effect the midi playback...
             case SEQUENCE_NUMBER:
-                /* code */
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s -> MSB:%u LSB:%u", "Sequence Number", midiEvents[i].metaEvent.data[0], midiEvents[i].metaEvent.data[1]);
                 break;
             case TEXT_EVENT:
-                /* code */
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s", "Text Event");
+                fprintf(midiEventCacheFile, " -> text: ");
+                for(int j = 0; j < midiEvents[i].metaEvent.length; j++)
+                    fprintf(midiEventCacheFile, "%c", midiEvents[i].metaEvent.data[j]);
+
                 break;
             case COPYRIGHT_NOTICE:
-                /* code */
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s", "Copyright Notice");
+                fprintf(midiEventCacheFile, " -> text: ");
+                for(int j = 0; j < midiEvents[i].metaEvent.length; j++)
+                    fprintf(midiEventCacheFile, "%c", midiEvents[i].metaEvent.data[j]);
                 break;
             case SEQUENCE_NAME:
-                /* code */
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s", "Sequence Name");
+                fprintf(midiEventCacheFile, " -> text: ");
+                for(int j = 0; j < midiEvents[i].metaEvent.length; j++)
+                    fprintf(midiEventCacheFile, "%c", midiEvents[i].metaEvent.data[j]);
                 break;
             case INSTRUMENT_NAME:
-                /* code */
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s", "Instrument Name");
+                fprintf(midiEventCacheFile, " -> text: ");
+                for(int j = 0; j < midiEvents[i].metaEvent.length; j++)
+                    fprintf(midiEventCacheFile, "%c", midiEvents[i].metaEvent.data[j]);
                 break;
             case LYRIC:
-                /* code */
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s", "Lyric");
+                fprintf(midiEventCacheFile, " -> text: ");
+                for(int j = 0; j < midiEvents[i].metaEvent.length; j++)
+                    fprintf(midiEventCacheFile, "%c", midiEvents[i].metaEvent.data[j]);
                 break;
             case MARKER:
-                /* code */
+                ///print the current event
+                fprintf(midiEventCacheFile, "%-20s", "Marker");
+                fprintf(midiEventCacheFile, " -> text: ");
+                for(int j = 0; j < midiEvents[i].metaEvent.length; j++)
+                    fprintf(midiEventCacheFile, "%c", midiEvents[i].metaEvent.data[j]);
                 break;
             case CUE_POINT:
-                /* code */
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s", "Cue Point");
+                fprintf(midiEventCacheFile, " -> text: ");
+                for(int j = 0; j < midiEvents[i].metaEvent.length; j++)
+                    fprintf(midiEventCacheFile, "%c", midiEvents[i].metaEvent.data[j]);
                 break;
             case PROGRAM_NAME:
-                /* code */
+                ///print the current event
+                fprintf(midiEventCacheFile, "%-20s", "Program Name");
+                fprintf(midiEventCacheFile, " -> text: ");
+                for(int j = 0; j < midiEvents[i].metaEvent.length; j++)
+                    fprintf(midiEventCacheFile, "%c", midiEvents[i].metaEvent.data[j]);
                 break;
             case DEVICE_NAME:
-                /* code */
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s", "Device Name");
+                fprintf(midiEventCacheFile, " -> text: ");
+                for(int j = 0; j < midiEvents[i].metaEvent.length; j++)
+                    fprintf(midiEventCacheFile, "%c", midiEvents[i].metaEvent.data[j]);
                 break;
             case CHANNEL_PREFIX:
-                /* code */
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s -> Ch:%u", "Channel Prefix", midiEvents[i].metaEvent.data[0]);
                 break;
             case MIDI_PORT:
-                /* code */
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s -> %u", "Midi Port", midiEvents[i].metaEvent.data[0]);
                 break;
             case SMPTE_OFFSET:
-                /* code */
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s -> H:%u M:%u Sec:%u Fr:%u SubFr:%u", "SMPTE Offset", midiEvents[i].metaEvent.data[0], 
+                midiEvents[i].metaEvent.data[1],
+                midiEvents[i].metaEvent.data[2],
+                midiEvents[i].metaEvent.data[3],
+                midiEvents[i].metaEvent.data[4]);
                 break;
             case TIME_SIGNATURE:
-                /* code */
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s -> Num:%u Den:%u Met:%u 32nds:%u", "Time Signature", midiEvents[i].metaEvent.data[0], 
+                midiEvents[i].metaEvent.data[1],
+                midiEvents[i].metaEvent.data[2],
+                midiEvents[i].metaEvent.data[3]);
                 break;
             case KEY_SIGNATURE:
-                /* code */
-                break;
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s -> Key:%u Scale:%u", "Key Signature", midiEvents[i].metaEvent.data[0], midiEvents[i].metaEvent.data[1]);                break;
             case SEQUENCER_SPECIFIC:
-                /* code */
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s -> Len:%u", "Sequence Specific", midiEvents[i].metaEvent.length);
                 break;
             default:
                 break;
@@ -237,32 +309,47 @@ Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOf
 
         //Midi channel event
         case MIDI_CHANNEL_EVENT:
+            //print the current events channel
+            fprintf(midiEventCacheFile, "(%-2u) ",midiEvents[i].channelEvent.channelNumber);
             switch (midiEvents[i].channelEvent.specificEventType)
             {
             case NOTE_ON:
                 noteArray[noteCount].frequency = turnMidiNoteNumberToFrequency(midiEvents[i].channelEvent.param1);
                 noteArray[noteCount].midiNoteNumber = midiEvents[i].channelEvent.param1;
+                noteArray[noteCount].velocity = midiEvents[i].channelEvent.param2;
                 noteArray[noteCount].playTime = playTime;
                 noteArray[noteCount].delay = (midiEvents[i].deltaTime * midiCurrentStatus->msPerTick) / 1000;
                 noteCount++;
+
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s -> #%u V:%u", "Note On", midiEvents[i].channelEvent.param1, midiEvents[i].channelEvent.param2);
+                
                 break;
             case NOTE_OFF:
                 findCorrespondingNoteOn(noteArray, noteCount, midiEvents[i].channelEvent.param1, playTime, midiCurrentStatus);
+
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s -> #%u V:%u", "Note Off", midiEvents[i].channelEvent.param1, midiEvents[i].channelEvent.param2);
                 break;
             case POLY_AFTERTOUCH:
-                /* code */
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s -> #%u val:%u", "Poly Aftertouch", midiEvents[i].channelEvent.param1, midiEvents[i].channelEvent.param2);
                 break;
             case CONTROL_CHANGE:
-                /* code */
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s -> #:%u val:%u", "Control Change", midiEvents[i].channelEvent.param1, midiEvents[i].channelEvent.param2);
                 break;
             case PROGRAM_CHNG:
-                /* code */
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s -> #:%u", "Program Change", midiEvents[i].channelEvent.param1);
                 break;
             case CHANNEL_AFTERTOUCH:
-                /* code */
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s -> #%u", "Channel Aftertouch", midiEvents[i].channelEvent.param1);
                 break;
             case PITCH_BEND:
-                /* code */
+                //print the current event
+                fprintf(midiEventCacheFile, "%-20s -> lsb:%u msb:%u", "Pitch Bend", midiEvents[i].channelEvent.param1, midiEvents[i].channelEvent.param2);
                 break;
             default:
                 break;
@@ -271,12 +358,19 @@ Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOf
 
         //System exclusive event
         case SYSEX_EVENT:
-            
+            //print the current events channel
+            fprintf(midiEventCacheFile, "(%-2u) ",midiEvents[i].sysExEvent.channelNumber);
+
+            fprintf(midiEventCacheFile, "%-20s -> Len:%u", "SysEx Event", midiEvents[i].sysExEvent.length);
+
             break;
         
         default:
             break;
         }
+
+        //print a new line
+        fprintf(midiEventCacheFile, "\n");
     }
     return noteArray;
 }
@@ -575,26 +669,25 @@ unsigned int readVariableLengthValue(FILE *midiFile)
 ////////////////////////////////////////
 
 
-void printMidiHeader(MidiHeader *midiHeader, FILE *midiFile)
+void printMidiHeader(MidiHeader *midiHeader, FILE *midiFile, FILE *midiEventCacheFile)
 {
     //principle of least privilege
     void readHeaderChunk(MidiHeader *, FILE *);
 
     readHeaderChunk(midiHeader, midiFile);
 
-    printf("************\n** Header **\n************\n");
-    printf("* Chunk Type: %s \n", midiHeader->chunkType);
-    printf("* Header Legnth: %u bytes\n", midiHeader->length);
-    printf("* Format: %u \n", midiHeader->format);
-    printf("* Tracks: %u \n", midiHeader->tracks);
+    fprintf(midiEventCacheFile, "%-22s -> %s \n", "Chunk Type", midiHeader->chunkType);
+    fprintf(midiEventCacheFile, "%-22s -> %u bytes\n", "Header Legnth", midiHeader->length);
+    fprintf(midiEventCacheFile, "%-22s -> %u \n", "Format", midiHeader->format);
+    fprintf(midiEventCacheFile, "%-22s -> %u \n", "Tracks", midiHeader->tracks);
     if(midiHeader->devisionType == 1)
     {
-        printf("* Frame Per Second: %u", midiHeader->framePerSecond);
-        printf("* Ticks Per Frame: %u", midiHeader->ticksPerFrame);
+        fprintf(midiEventCacheFile, "%-22s -> %u", "Frame Per Second", midiHeader->framePerSecond);
+        fprintf(midiEventCacheFile, "%-22s -> %u", "Ticks Per Frame", midiHeader->ticksPerFrame);
 
     }else if(midiHeader->devisionType == 0)
     {
-        printf("* Ticks Per Quarter Note: %u\n\n\n", midiHeader->ticksPerQuarterNote);
+        fprintf(midiEventCacheFile, "%-22s -> %u\n\n\n", "Ticks Per Quarter Note", midiHeader->ticksPerQuarterNote);
     }
 
 }

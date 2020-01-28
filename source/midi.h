@@ -158,6 +158,8 @@ typedef struct{
 	unsigned int delay;
 	unsigned int playTime;
 	unsigned int midiNoteNumber;
+	unsigned int velocity;
+
 } Note;
 
 typedef struct 
@@ -166,7 +168,7 @@ typedef struct
 	Note *notes;
 } NoteSequence;
 
-void printMidiHeader(MidiHeader *, FILE *);
+void printMidiHeader(MidiHeader *, FILE *, FILE *);
 unsigned int readVariableLengthValue(FILE *);
 
 void print_midi_track();

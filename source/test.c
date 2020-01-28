@@ -1,14 +1,13 @@
-#include <math.h>
+    // fprintf(midiEventCacheFile, "Chunk Type: %s \n", midiHeader->chunkType);
+    // fprintf(midiEventCacheFile, "Header Legnth: %u bytes\n", midiHeader->length);
+    // fprintf(midiEventCacheFile, "Format: %u \n", midiHeader->format);
+    // fprintf(midiEventCacheFile, "Tracks: %u \n", midiHeader->tracks);
+    // if(midiHeader->devisionType == 1)
+    // {
+    //     fprintf(midiEventCacheFile, "Frame Per Second: %u", midiHeader->framePerSecond);
+    //     fprintf(midiEventCacheFile, "Ticks Per Frame: %u", midiHeader->ticksPerFrame);
 
-float turnMidiNoteNumberToFrequency(unsigned int noteNumber)
-{
-    int a = 440; 
-    
-    return (a / 32) * (pow(2, (noteNumber - 9)) / 12);
-    
-}
-int main()
-{
-    float x = turnMidiNoteNumberToFrequency(120);
-    int g = 2;
-}
+    // }else if(midiHeader->devisionType == 0)
+    // {
+    //     fprintf(midiEventCacheFile, "Ticks Per Quarter Note: %u\n\n\n", midiHeader->ticksPerQuarterNote);
+    // }
