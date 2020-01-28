@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include "beep.h"
 #include "intro.h"
 #include "midi.h"
@@ -9,8 +10,9 @@
 int main()
 {
     unsigned int readVariableLengthValue(FILE *midiFile);
-    void readTrackEvents(FILE *midiFile, MidiEvent *midiEvents);
+    MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numberOfNotes);
     void ei_ui_fread(unsigned int *ptr, size_t size, size_t n, FILE *streamPtr);
+    Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOfNotes, MidiCurrentStatus *);
 
     // _+_+_+_+_+( PHASE I )+_+_+_+_+_
     // Play the intro song using the intro.c source file 
@@ -25,9 +27,30 @@ int main()
     MidiHeader midiHeader; 
     printMidiHeader(&midiHeader, midiFile);
 
+    //setting the read data to  a midi current status struct
+    //the default tempo is 120BPM that translates to 60000000 / 120 = 500000 microseconds per quarter note
+    MidiCurrentStatus midiCurrentStatus;
+    if(midiHeader.devisionType == 0)
+    {
+        midiCurrentStatus.ticksPerQuarterNote = midiHeader.ticksPerQuarterNote;
+    }else
+    {
+        midiCurrentStatus.framePerSecond = midiHeader.framePerSecond;
+        midiCurrentStatus.ticksPerFrame = midiHeader.ticksPerFrame;
+
+    }
+    //tempo is in terms of microseconds per quarter note
+    midiCurrentStatus.tempo = 60000000 / 120;
+
+	//microseconds per tick which is tempo / ticksPerQuarterNote 
+    midiCurrentStatus.msPerTick = midiCurrentStatus.tempo / midiCurrentStatus.ticksPerQuarterNote;
+    
+
     // _+_+_+_+_+( PHASE III )+_+_+_+_+_
     //initialize the tracks and populate them with events
     MidiTrack *tracks = calloc(midiHeader.tracks, sizeof(MidiTrack));
+    NoteSequence *noteSequence = calloc(midiHeader.tracks, sizeof(NoteSequence));
+
     for(int i = 0; i < midiHeader.tracks; i++)
     {
         char chunkID[4];
@@ -37,32 +60,158 @@ int main()
         unsigned int trackSize;
         ei_ui_fread(&trackSize, sizeof(char), 4, midiFile);
 
-        tracks[i].midiEvents = calloc(500, sizeof(MidiEvent));
-        readTrackEvents(midiFile, tracks[i].midiEvents);
-    }
+        //reads all of the contents of the track
+        tracks[i].midiEvents = readTrackEvents(midiFile, &(tracks[i].numberOfEvents), &(noteSequence[i].numberOfNotes));
 
+
+        //creates an array of notes using note on and note off events
+        noteSequence[i].notes = composeNotes(tracks[i].midiEvents, tracks[i].numberOfEvents, noteSequence[i].numberOfNotes, &midiCurrentStatus);
+    }
+    
 
 
 
     // _+_+_+_+_+( PHASE IV )+_+_+_+_+_
-
+    for(int i = 0; i < midiHeader.tracks; i++)
+    {
+        playNotes(noteSequence[i].notes, noteSequence[i].numberOfNotes);
+    }
 
     //close the midi file stream
     fclose(midiFile);
 
+}
+////////////////////////////////////////
+////////////////////////////////////////
+////////////////////////////////////////
+
+//this functions matches note of events with their corresponding note on events and alculates their length and returns an array of notes 
+Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOfNotes, MidiCurrentStatus *midiCurrentStatus)
+{
+    //prototypes
+    float turnMidiNoteNumberToFrequency(unsigned int);
+    void findCorrespondingNoteOn(Note *noteArray, size_t noteCount, unsigned int noteNumber, unsigned int playTime, MidiCurrentStatus *);
+    void ei_ui_byteArray(unsigned int *ptr, size_t dataSize, char *data);
+
+    Note *noteArray = calloc(numberOfNotes, sizeof(Note));
+    size_t noteCount = 0;
+
+    // the elapsed time since the first event in ticks
+    unsigned int playTime;
+
+    for(int i = 0; i < numberOfEvents && noteCount <= numberOfNotes; i++)
+    {
+        //ad the current events delta time to total Playtime
+        playTime += midiEvents[i].deltaTime;
+
+        //control statements for handling midi events
+        switch (midiEvents[i].eventType)
+        {
+        //Meta Event
+        case META_EVENT:
+            switch (midiEvents[i].metaEvent.specificEventType)
+            {
+            case SET_TEMPO:
+                ;
+                //endian independently set the 3 byte data of previously read tempo as the current tempo
+                unsigned int newTempo = 0;
+                ei_ui_byteArray(&newTempo, midiEvents[i].metaEvent.length, midiEvents[i].metaEvent.data);
+                printf("0x%.8X\n", midiEvents[i].metaEvent.data[0]);
+                printf("%d\n", midiEvents[i].metaEvent.data[1]);
+                printf("0x%.8X\n", midiEvents[i].metaEvent.data[2]);
+                //  newTempo = (midiEvents[i].metaEvent.data[2]<<0) | (midiEvents[i].metaEvent.data[1]<<8) | (midiEvents[i].metaEvent.data[0]<<16);
+
+                midiCurrentStatus->tempo = newTempo;
+                midiCurrentStatus->msPerTick = midiCurrentStatus->tempo / midiCurrentStatus->ticksPerQuarterNote; 
+                break;
+            
+            default:
+                break;
+            }
+            break;
+
+        //Midi channel event
+        case MIDI_CHANNEL_EVENT:
+            switch (midiEvents[i].channelEvent.specificEventType)
+            {
+            case NOTE_ON:
+                noteArray[noteCount].frequency = turnMidiNoteNumberToFrequency(midiEvents[i].channelEvent.param1);
+                noteArray[noteCount].midiNoteNumber = midiEvents[i].channelEvent.param1;
+                noteArray[noteCount].playTime = playTime;
+                noteArray[noteCount].delay = (midiEvents[i].deltaTime * midiCurrentStatus->msPerTick) / 1000;
+                noteCount++;
+                break;
+            case NOTE_OFF:
+                findCorrespondingNoteOn(noteArray, noteCount, midiEvents[i].channelEvent.param1, playTime, midiCurrentStatus);
+                break;
+            case POLY_AFTERTOUCH:
+                /* code */
+                break;
+            case CONTROL_CHANGE:
+                /* code */
+                break;
+            case PROGRAM_CHNG:
+                /* code */
+                break;
+            case CHANNEL_AFTERTOUCH:
+                /* code */
+                break;
+            case PITCH_BEND:
+                /* code */
+                break;
+            default:
+                break;
+            }
+            break;
+
+        //System exclusive event
+        case SYSEX_EVENT:
+            
+            break;
+        
+        default:
+            break;
+        }
+    }
+    return noteArray;
 }
 
 ////////////////////////////////////////
 ////////////////////////////////////////
 ////////////////////////////////////////
 
-void readTrackEvents(FILE *midiFile, MidiEvent *midiEvents)
+void findCorrespondingNoteOn(Note *noteArray, size_t noteCount, unsigned int noteNumber, unsigned int playTime, MidiCurrentStatus * midiCurrentStatus)
+{
+    for(int i = noteCount - 1; i >= 0; i--)
+    {
+        if(noteArray[i].midiNoteNumber == noteNumber)
+        {
+            noteArray[i].length = ((playTime - noteArray[i].playTime) * midiCurrentStatus->msPerTick) / 1000;
+            return;
+        }
+    }
+}
+
+////////////////////////////////////////
+////////////////////////////////////////
+////////////////////////////////////////
+
+
+MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numberOfNotes)
 {
     //prototypes
     unsigned int readVariableLengthValue(FILE *midiFile);
     void ei_ui_fread(unsigned int *ptr, size_t size, size_t n, FILE *streamPtr);
 
+    //a counter for the number of note-on events which dont have 0 velocity
+    size_t noteCount = 0;
+
     size_t trackEventCount = 0;
+    //we'll dynamically increase the buffer if it gets filled up
+    size_t trackEventCountBuffer = 100;
+    MidiEvent *midiEvents = calloc(trackEventCountBuffer, sizeof(MidiEvent));
+
+
 
     //read delta time
     unsigned int deltaTime = readVariableLengthValue(midiFile);
@@ -124,7 +273,9 @@ void readTrackEvents(FILE *midiFile, MidiEvent *midiEvents)
                 //break if it reaches the end of track
                 if(metaEventType == END_OF_TRACK)
                 {
-                    break;
+                    *numberOfEvents = trackEventCount;
+                    *numberOfNotes = noteCount;
+                    return midiEvents;
                 }
 
 
@@ -165,8 +316,13 @@ void readTrackEvents(FILE *midiFile, MidiEvent *midiEvents)
 
         }else if(eventCode >= 0x80 && eventCode <= 0xEF)
         {
-            previousEventCode = eventCode;
             //this event is a midichannel event
+            previousEventCode = eventCode;
+
+            midiChannelPrefix = 0;
+            /*CHANNEL_PREFIX is used to associate any subsequent SysEx and Meta events with a particular MIDI channel, 
+            and will remain in effect until the next MIDI Channel Prefix Meta event or the next MIDI event.*/
+
             // Delta Time 	Event Type Value 	MIDI Channel 	Parameter 1 	Parameter 2
             midiEvents[trackEventCount].eventType = MIDI_CHANNEL_EVENT;
 
@@ -181,15 +337,25 @@ void readTrackEvents(FILE *midiFile, MidiEvent *midiEvents)
             unsigned int param1;
             //read one byte
             ei_ui_fread(&param1, 1, 1, midiFile);
-
-            //getting the second parameter 
-            unsigned int param2;
-            //read one byte
-            ei_ui_fread(&param2, 1, 1, midiFile);
-
-            //setting the params
             midiEvents[trackEventCount].channelEvent.param1 = param1;
-            midiEvents[trackEventCount].channelEvent.param2 = param2;
+
+            if(first4BitOfEventCode != PROGRAM_CHNG && first4BitOfEventCode != CHANNEL_AFTERTOUCH)
+            { 
+                //getting the second parameter 
+                unsigned int param2;
+                //read one byte
+                ei_ui_fread(&param2, 1, 1, midiFile);
+                midiEvents[trackEventCount].channelEvent.param2 = param2;
+
+                //if the velocity of a noteon event was zero, turn in into a note off
+                if(first4BitOfEventCode == NOTE_ON && param2 == 0)
+                {
+                    midiEvents[trackEventCount].channelEvent.specificEventType = NOTE_OFF;
+                }else if(first4BitOfEventCode == NOTE_ON && param2 != 0)
+                {
+                    noteCount++;
+                }
+            }
 
             
 
@@ -213,15 +379,29 @@ void readTrackEvents(FILE *midiFile, MidiEvent *midiEvents)
 
             //since this is a running status the current eventcode we just read is actually a parameter
             unsigned int param1 = eventCode;
-
-            //getting the second parameter 
-            unsigned int param2;
-            //read one byte
-            ei_ui_fread(&param2, 1, 1, midiFile);
-
-            //setting the params
             midiEvents[trackEventCount].channelEvent.param1 = param1;
-            midiEvents[trackEventCount].channelEvent.param2 = param2;
+
+            if(first4BitOfEventCode != PROGRAM_CHNG && first4BitOfEventCode != CHANNEL_AFTERTOUCH)
+            { 
+                //getting the second parameter 
+                unsigned int param2;
+                //read one byte
+                ei_ui_fread(&param2, 1, 1, midiFile);
+                midiEvents[trackEventCount].channelEvent.param2 = param2;
+
+                //if the velocity of a noteon event was zero, turn in into a note off
+                if(first4BitOfEventCode == NOTE_ON && param2 == 0)
+                {
+                    midiEvents[trackEventCount].channelEvent.specificEventType = NOTE_OFF;
+
+                }else if(first4BitOfEventCode == NOTE_ON && param2 != 0)
+                {
+                    noteCount++;
+                }
+            }
+
+
+            
 
             
         }
@@ -229,8 +409,24 @@ void readTrackEvents(FILE *midiFile, MidiEvent *midiEvents)
 
         //increment the counter for midiEvents array
         trackEventCount++;
-        printf("%d\n", deltaTime);
 
+        //check the count and buffer, if it is realloc it
+        if(trackEventCount == trackEventCountBuffer)
+        {
+            trackEventCountBuffer *=3;
+            MidiEvent *dummyptr;
+            dummyptr = realloc(midiEvents, (trackEventCountBuffer) * sizeof(MidiEvent));
+            if(dummyptr == NULL)
+            {
+                printf("An erorr has occured");
+                return dummyptr;
+            }else
+            {
+                midiEvents = dummyptr;
+            }
+            
+
+        }
         //read next delta time
         deltaTime = readVariableLengthValue(midiFile);
         //fread(&deltaTime, 1, 1, midiFile);
@@ -386,6 +582,33 @@ void ei_ui_fread(unsigned int *ptr, size_t size, size_t n, FILE *streamPtr)
 
 }
 
+
+////////////////////////////////////////
+////////////////////////////////////////
+////////////////////////////////////////
+
+
+//Endian-independent function to read unsigned int from a byte array
+void ei_ui_byteArray(unsigned int *ptr, size_t dataSize, char *data)
+{
+    *ptr = 0;
+
+    for(int i = 0, j = (dataSize - 1) * 8; i < dataSize && j >= 0; i-=1, j-=8)
+    {
+        *ptr |= data[i]<<j;
+    }
+
+}
+
+
+float turnMidiNoteNumberToFrequency(unsigned int noteNumber)
+{
+    //frequency of A4
+    int a = 440; 
+
+    return (a / 32) * pow(2, ((noteNumber - 9) / 12.0));
+    
+}
 
 ////////////////////////////////////////
 ////////////////////////////////////////

@@ -21,12 +21,15 @@ typedef enum
 	LYRIC = 				0X05,
 	MARKER = 				0X06,
 	CUE_POINT = 			0X07,
+	PROGRAM_NAME = 			0x08,
+	DEVICE_NAME = 			0x09,
 	CHANNEL_PREFIX = 		0X20,
+	MIDI_PORT = 			0x21, //this is considered obsolete (changed with DEVICE NAME)
 	SET_TEMPO =	 			0X51,
 	SMPTE_OFFSET = 			0X54,
 	TIME_SIGNATURE = 		0X58,
 	KEY_SIGNATURE = 		0X59,
-	SEQUENCER_SPECIFIC = 	0X74,
+	SEQUENCER_SPECIFIC = 	0X7F,	
 	END_OF_TRACK = 			0X2F,
 
 	/* MIDI CHANNEL EVENTS */
@@ -59,7 +62,7 @@ typedef enum
 		SpecificEventType specificEventType;
 		unsigned int channelNumber;
 		unsigned int length;
-		char *data;
+		unsigned char *data;
 		
 	} MetaEvent;
 
@@ -94,6 +97,7 @@ typedef enum
 typedef struct
 {
 	unsigned int trackSize;
+	size_t numberOfEvents;
 	MidiEvent *midiEvents;
     
 } MidiTrack;
@@ -122,12 +126,41 @@ typedef struct
 
 } MidiHeader;
 
+typedef struct
+{
+	//tempo is in terms of microseconds per quarter note
+	unsigned int tempo;
+	
+	//microseconds per tick which is tempo / ticksPerQuarterNote 
+	unsigned int msPerTick;
+
+	unsigned int ticksPerQuarterNote;
+
+    unsigned int framePerSecond;
+
+    unsigned int ticksPerFrame;
+
+} MidiCurrentStatus;
+
+
+
+
 
 // a note structure
 typedef struct{
     float frequency;
     int length;
+	unsigned int delay;
+	unsigned int playTime;
+	unsigned int midiNoteNumber;
+	//char name[5];
 } Note;
+
+typedef struct 
+{
+	size_t numberOfNotes;
+	Note *notes;
+} NoteSequence;
 
 void printMidiHeader(MidiHeader *, FILE *);
 unsigned int readVariableLengthValue(FILE *);

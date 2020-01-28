@@ -4,6 +4,7 @@
 #include "notes.h"
 #include <string.h>
 #include <stdlib.h>
+#include <time.h>
 
 #define STRING_SIZE 4
 #define INCREASE_SIZE 50
@@ -78,12 +79,23 @@ void playIntro(void)
     fclose(fPtr);
     
 }
+//delay function
+void delay(int milliseconds)
+{
+    long pause;
+    clock_t now,then;
+
+    pause = milliseconds*(CLOCKS_PER_SEC/1000);
+    now = then = clock();
+    while( (now-then) < pause )
+        now = clock();
+}
 // a simple function to iterate through the array of notes and play them
 void playNotes(Note *notesArray, size_t size)
 {
     for(int i = 0; i < size; i += 1)
         {
-            printf("\rPlaying note %.2f", (notesArray + i)->frequency);
+            delay((notesArray + i)->delay);
             beep((notesArray + i)->frequency, (notesArray + i)->length + 130);
         }
 }
