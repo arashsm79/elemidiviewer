@@ -20,6 +20,11 @@ int main()
     
     //open a midi file
     FILE *midiFile = fopen("music.mid", "rb");
+    if(midiFile == NULL)
+    {
+        printf("Erorr Opening File!\n");
+        return 1;
+    }
 
 
     // _+_+_+_+_+( PHASE II )+_+_+_+_+_
@@ -91,7 +96,7 @@ Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOf
     //prototypes
     float turnMidiNoteNumberToFrequency(unsigned int);
     void findCorrespondingNoteOn(Note *noteArray, size_t noteCount, unsigned int noteNumber, unsigned int playTime, MidiCurrentStatus *);
-    void ei_ui_byteArray(unsigned int *ptr, size_t dataSize, char *data);
+    void ei_ui_byteArray(unsigned int *ptr, size_t dataSize, unsigned char *data);
 
     Note *noteArray = calloc(numberOfNotes, sizeof(Note));
     size_t noteCount = 0;
@@ -115,12 +120,12 @@ Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOf
                 ;
                 //endian independently set the 3 byte data of previously read tempo as the current tempo
                 unsigned int newTempo = 0;
-                ei_ui_byteArray(&newTempo, midiEvents[i].metaEvent.length, midiEvents[i].metaEvent.data);
-                printf("0x%.8X\n", midiEvents[i].metaEvent.data[0]);
-                printf("%d\n", midiEvents[i].metaEvent.data[1]);
-                printf("0x%.8X\n", midiEvents[i].metaEvent.data[2]);
-                //  newTempo = (midiEvents[i].metaEvent.data[2]<<0) | (midiEvents[i].metaEvent.data[1]<<8) | (midiEvents[i].metaEvent.data[0]<<16);
 
+             
+                ei_ui_byteArray(&newTempo, midiEvents[i].metaEvent.length, midiEvents[i].metaEvent.data);
+
+
+                //  newTempo = (midiEvents[i].metaEvent.data[2]<<0) | (midiEvents[i].metaEvent.data[1]<<8) | (midiEvents[i].metaEvent.data[0]<<16);
                 midiCurrentStatus->tempo = newTempo;
                 midiCurrentStatus->msPerTick = midiCurrentStatus->tempo / midiCurrentStatus->ticksPerQuarterNote; 
                 break;
@@ -282,6 +287,7 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
                 //read and set data
                 midiEvents[trackEventCount].metaEvent.data = calloc(metaEventLength, sizeof(char));
                 fread(midiEvents[trackEventCount].metaEvent.data, sizeof(char), metaEventLength, midiFile);
+
 
 
                 //if it was a channel prefix set the channel
@@ -589,14 +595,16 @@ void ei_ui_fread(unsigned int *ptr, size_t size, size_t n, FILE *streamPtr)
 
 
 //Endian-independent function to read unsigned int from a byte array
-void ei_ui_byteArray(unsigned int *ptr, size_t dataSize, char *data)
+void ei_ui_byteArray(unsigned int *ptr, size_t dataSize, char unsigned *data)
 {
     *ptr = 0;
 
-    for(int i = 0, j = (dataSize - 1) * 8; i < dataSize && j >= 0; i-=1, j-=8)
+    for(int i = 0, j = (dataSize - 1) * 8; i < dataSize && j >= 0; i+=1, j-=8)
     {
         *ptr |= data[i]<<j;
     }
+    unsigned int new;
+    new = (data[2]<<0) | (data[1]<<8) | (data[0]<<16);
 
 }
 

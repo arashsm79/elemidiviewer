@@ -3,6 +3,9 @@
 
 #include <stdbool.h>
 
+// could have used uint8_t, uint16_t, uint32_t and uint64_t. instead of unsigned byte, ...
+//#include <stdint.h>
+
 typedef enum
 {
 	MIDI_CHANNEL_EVENT,
@@ -73,7 +76,7 @@ typedef enum
 	{
 		unsigned int channelNumber;
 		unsigned int length;
-		char *data;
+		unsigned char *data;
 		
 	} SysExEvent;
 
@@ -153,7 +156,6 @@ typedef struct{
 	unsigned int delay;
 	unsigned int playTime;
 	unsigned int midiNoteNumber;
-	//char name[5];
 } Note;
 
 typedef struct 
