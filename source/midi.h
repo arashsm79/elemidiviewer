@@ -1,0 +1,138 @@
+#ifndef __LIB_MIDI_PARSER_HEADER_
+#define __LIB_MIDI_PARSER_HEADER_
+
+#include <stdbool.h>
+
+typedef enum
+{
+	MIDI_CHANNEL_EVENT,
+	META_EVENT = 0xFF,
+	SYSEX_EVENT = 0xF0,
+} EventType;
+
+typedef enum
+{
+	/* MIDI META EVENTS */
+	SEQUENCE_NUMBER = 		0X00,
+	TEXT_EVENT = 			0X01,
+	COPYRIGHT_NOTICE = 		0X02,
+	SEQUENCE_NAME = 		0X03,
+	INSTRUMENT_NAME = 		0X04,
+	LYRIC = 				0X05,
+	MARKER = 				0X06,
+	CUE_POINT = 			0X07,
+	CHANNEL_PREFIX = 		0X20,
+	SET_TEMPO =	 			0X51,
+	SMPTE_OFFSET = 			0X54,
+	TIME_SIGNATURE = 		0X58,
+	KEY_SIGNATURE = 		0X59,
+	SEQUENCER_SPECIFIC = 	0X74,
+	END_OF_TRACK = 			0X2F,
+
+	/* MIDI CHANNEL EVENTS */
+	NOTE_OFF = 				0X80,
+	NOTE_ON = 				0X90,
+	POLY_AFTERTOUCH = 		0XA0,
+	CONTROL_CHANGE = 		0XB0,
+	PROGRAM_CHNG = 			0XC0,
+	CHANNEL_AFTERTOUCH = 	0XD0,
+	PITCH_BEND = 			0XE0,
+} SpecificEventType;
+
+
+// /* Channel Event Decleration */
+	typedef struct
+	{
+		
+		SpecificEventType specificEventType;
+		unsigned int channelNumber;
+		unsigned int param1;
+		unsigned int param2;
+
+	} ChannelEvent;
+
+
+
+// /* Meta Event Decleration */
+	typedef struct
+	{
+		SpecificEventType specificEventType;
+		unsigned int channelNumber;
+		unsigned int length;
+		char *data;
+		
+	} MetaEvent;
+
+
+
+// /* SysEx Event Decleration */
+	typedef struct
+	{
+		unsigned int channelNumber;
+		unsigned int length;
+		char *data;
+		
+	} SysExEvent;
+
+
+// /* Event Decleration */
+	typedef struct
+	{
+		EventType eventType;
+		unsigned int deltaTime;
+		
+		union {
+			ChannelEvent channelEvent;
+			MetaEvent metaEvent;
+			SysExEvent sysExEvent;
+		};
+
+	} MidiEvent;
+
+
+// /* Track Decleration */
+typedef struct
+{
+	unsigned int trackSize;
+	MidiEvent *midiEvents;
+    
+} MidiTrack;
+
+
+// /* Header Decleration */
+typedef struct
+{
+	char chunkType[4];
+
+    unsigned int length;
+
+    unsigned int format;
+
+    unsigned int tracks;
+
+    unsigned int devision;
+
+    unsigned int devisionType;
+
+    unsigned int ticksPerQuarterNote;
+
+    unsigned int framePerSecond;
+
+    unsigned int ticksPerFrame;
+
+} MidiHeader;
+
+
+// a note structure
+typedef struct{
+    float frequency;
+    int length;
+} Note;
+
+void printMidiHeader(MidiHeader *, FILE *);
+unsigned int readVariableLengthValue(FILE *);
+
+void print_midi_track();
+void Midi_player();
+
+#endif
