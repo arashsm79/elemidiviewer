@@ -33,7 +33,7 @@ unsigned int trackTotalBytes = 0;
 
 pid_t *pid_parent;
 //opens the given midi file and creates an event cache
-GuiStatus openMidiFileAndCreateEventCashe(char *filePath, pid_t *ppid)
+void openMidiFileAndCreateEventCashe(char *filePath, pid_t *ppid)
 {
     unsigned int readVariableLengthValue(FILE *midiFile);
     MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numberOfNotes, unsigned int);
@@ -48,12 +48,13 @@ GuiStatus openMidiFileAndCreateEventCashe(char *filePath, pid_t *ppid)
     
     pid_parent = ppid;
 
-    
+
     //open a midi file
     midiFile = fopen(filePath, "rb");
     if(midiFile == NULL)
     {
         kill(*pid_parent, FILENOTFOUND);
+        
     }
     midiFileFlagStatus = STATUS_OPEN;
 
@@ -63,6 +64,7 @@ GuiStatus openMidiFileAndCreateEventCashe(char *filePath, pid_t *ppid)
     if(midiEventCacheFile == NULL)
     {
         kill(*pid_parent, FILENOTFOUND);
+        
     }
     cacheFileFlagStatus = STATUS_OPEN;
 
@@ -99,11 +101,11 @@ GuiStatus openMidiFileAndCreateEventCashe(char *filePath, pid_t *ppid)
     //there is a note sequence for every track
     noteSequence = calloc(midiHeader.tracks, sizeof(NoteSequence));
 
-    if(tracks == NULL || noteSequence == NULL)
+    if(tracks == NULL || noteSequence == NULL){ 
         kill(*pid_parent, GENERALERROR);
+        }
 
 
-    memoryCleanFlagStatus = STATUS_UNCLEAN;
 
     for(int i = 0; i < midiHeader.tracks; i++)
     {
@@ -114,6 +116,7 @@ GuiStatus openMidiFileAndCreateEventCashe(char *filePath, pid_t *ppid)
         if(strstr(chunkID, "MTrk") == NULL)
         {
             kill(*pid_parent, CORRUPTMIDI);
+            
         }
 
         fprintf(midiEventCacheFile, "%-22s -> %4s \n", "Chunk Type", chunkID);
@@ -121,7 +124,7 @@ GuiStatus openMidiFileAndCreateEventCashe(char *filePath, pid_t *ppid)
         unsigned int trackSize;
         ei_ui_fread(&trackSize, sizeof(char), 4, midiFile);
         fprintf(midiEventCacheFile, "%-22s -> %u bytes\n", "Track Legnth", trackSize);
-
+        
         //reads all of the contents of the track
         tracks[i].midiEvents = readTrackEvents(midiFile, &(tracks[i].numberOfEvents), &(noteSequence[i].numberOfNotes), trackSize);
 
@@ -138,8 +141,8 @@ GuiStatus openMidiFileAndCreateEventCashe(char *filePath, pid_t *ppid)
     fclose(midiFile);
     midiFileFlagStatus = STATUS_CLOSE;
 
+    memoryCleanFlagStatus = STATUS_UNCLEAN;
 
-    return STATUS_DONE;
 }
 
 ////////////////////////////////////////
@@ -735,11 +738,14 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
                 //break if it reaches the end of track
                 if(metaEventType == END_OF_TRACK)
                 {
-                    deltaTime = readVariableLengthValue(midiFile);
-                    if(trackTotalBytes-1 != trackSize)
+
+                    if(trackTotalBytes != trackSize)
                     {
                         kill(*pid_parent, ENDOFTRACKERROR);
+                        
                     }
+
+
                     *numberOfEvents = trackEventCount;
                     *numberOfNotes = noteCount;
                     return midiEvents;
@@ -899,8 +905,8 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
             dummyptr = realloc(midiEvents, (trackEventCountBuffer) * sizeof(MidiEvent));
             if(dummyptr == NULL)
             {
-                printf("An erorr has occured");
-                return dummyptr;
+                kill(*pid_parent, GENERALERROR);
+                
             }else
             {
                 midiEvents = dummyptr;
@@ -916,10 +922,11 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
         // the next event code
         ei_ui_fread(&eventCode, 1, 1, midiFile);
         trackTotalBytes += 1;
-
     }
     //if the program reaches this part it means that it hasn't found end of track event within the bounds of track length
     kill(*pid_parent, ENDOFTRACKERROR);
+    
+
 }
 ////////////////////////////////////////
 ////////////////////////////////////////
@@ -998,6 +1005,7 @@ void readHeaderChunk(MidiHeader *midiHeader, FILE *fptr)
     if(strstr(midiHeader->chunkType, "MThd") == NULL)
     {
         kill(*pid_parent, CORRUPTMIDI);
+        
     }
     
     
@@ -1008,6 +1016,7 @@ void readHeaderChunk(MidiHeader *midiHeader, FILE *fptr)
     {
         kill(*pid_parent, CORRUPTMIDI);
         
+        
     }
 
     //read 16 bits
@@ -1015,12 +1024,14 @@ void readHeaderChunk(MidiHeader *midiHeader, FILE *fptr)
     if(midiHeader->format < 0 || midiHeader->format > 2)
     {
         kill(*pid_parent, CORRUPTMIDI);
+        
     }
     //read 16 bits
     ei_ui_fread(&(midiHeader->tracks), 1, 2, fptr);
     if(midiHeader->tracks < 1 || midiHeader->tracks > 65535)
     {
         kill(*pid_parent, CORRUPTMIDI);
+        
     }
     //read 16 bits
     ei_ui_fread(&(midiHeader->devision), 1, 2, fptr);
@@ -1058,6 +1069,7 @@ void readHeaderChunk(MidiHeader *midiHeader, FILE *fptr)
     if(midiHeader->length > 6)
     {
         kill(*pid_parent, GENERALERROR);
+        
         int numberOfBytesOfAdditionalInformationInHeader = midiHeader->length - 6;
         int additionalInformationInHeader;
         fread(&additionalInformationInHeader, 1, numberOfBytesOfAdditionalInformationInHeader, fptr);

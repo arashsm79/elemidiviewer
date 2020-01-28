@@ -12,8 +12,10 @@
 
 // Make them global
 //shared memory
-GuiStatus *cacheStatus;
 GuiStatus *playStatus;
+//process ids
+pid_t pid_child;
+pid_t *pid_parent;
 
 
 
@@ -27,6 +29,7 @@ GtkWidget *main_pause;
 GtkWidget *main_fileChooser;
 GtkWidget *main_spinner;
 GtkWidget *main_progressBar;
+GtkWidget *main_textEntry;
 GtkWidget *main_eventGrid;
 
 
@@ -36,12 +39,12 @@ GtkWidget *menu_quit;
 GtkWidget *menu_about;
 
 
-//process ids
-pid_t pid_child;
-pid_t *pid_parent;
 
-GtkWidget *main_gridButton[10000];
+//an array of buttons for populating the grid
+GtkWidget **main_gridButton;
 int	main_gridButtonCount = 0;
+
+int isFirstTimeClickedOnOpen = 1;
 
 
 //signals
@@ -51,6 +54,7 @@ void sigtype2();
 void sigendoftrack();
 void sigfilenotfound();
 void siggeneralerror();
+void signaldoneparsing();
 
 
 void on_destroy();
@@ -84,18 +88,13 @@ int main(int argc, char *argv[]) {
 	menu_new = GTK_WIDGET(gtk_builder_get_object(main_builder, "menu_new"));
 	menu_quit = GTK_WIDGET(gtk_builder_get_object(main_builder, "menu_quit"));
 	menu_about = GTK_WIDGET(gtk_builder_get_object(main_builder, "menu_about"));
+	main_textEntry = GTK_WIDGET(gtk_builder_get_object(main_builder, "main_textEntry"));
 	main_eventGrid = GTK_WIDGET(gtk_builder_get_object(main_builder, "main_eventGrid"));
 
 
 	// setting up shared memories
-
-	cacheStatus = mmap(NULL, sizeof(GuiStatus), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
-	*cacheStatus = STATUS_PROCESSING;
-
 	playStatus = mmap(NULL, sizeof(GuiStatus), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 	*playStatus = STATUS_PAUSE;
-
-    
 
 	pid_parent = mmap(NULL, sizeof(pid_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 	*pid_parent = 1;
@@ -122,7 +121,7 @@ int main(int argc, char *argv[]) {
 void on_destroy()
 {
 	//set the flag
-	//*isMainOpen = 0;
+    gtk_spinner_stop (GTK_SPINNER(main_spinner));
     kill(pid_child, SIGQUIT);
 	gtk_main_quit();
 }
@@ -147,30 +146,35 @@ void on_event_grid_row_clicked(GtkButton *b)
 }
 
 //file chooser
-//void on_main_fileChooser_file_set(GtkFileChooserButton *f)
 void on_main_fileChooser_clicked(GtkButton *f)
 {
+    gtk_spinner_start (GTK_SPINNER(main_spinner));
 
     //clean up everything before opening up another file
-    clearGrid();
+    if(isFirstTimeClickedOnOpen)
+    { 
+        isFirstTimeClickedOnOpen = 0;
+    }else
+    {
+        clearGrid();
+        kill(pid_child, SIGQUIT);
+    }
     
-
+    
+    
+    
     //creating a child process for playing the midi
     pid_child = fork();
     if(pid_child == 0)
     {
         //FIRST CHILD
         signal(SIGQUIT, sigquit_child);
-        *cacheStatus = openMidiFileAndCreateEventCashe("music.mid", pid_parent);
-        
+        sleep(1);
+        openMidiFileAndCreateEventCashe(gtk_entry_get_text(GTK_ENTRY(main_textEntry)), pid_parent);
         //start playing the midi file
-        if(*cacheStatus == STATUS_DONE)
-        { 
-            playMidiFile(playStatus, pid_parent);
-        }else
-        {
-            kill(*pid_parent, CORRUPTMIDI);
-        }
+        kill(*pid_parent, DONEPARSING);
+        playMidiFile(playStatus, pid_parent);
+  
         
      
     }else if(pid_child > 0)
@@ -180,59 +184,15 @@ void on_main_fileChooser_clicked(GtkButton *f)
         signal(CORRUPTMIDI, sigcorrupt);
         signal(ENDOFTRACKERROR, sigendoftrack);
         signal(TYPE2MIDI, sigtype2);
+        signal(DONEPARSING, signaldoneparsing);
         signal(FILENOTFOUND, sigfilenotfound);
         signal(GENERALERROR, siggeneralerror);
-
-
-
-        while(1)
-        { 
-            if(*cacheStatus == STATUS_DONE)
-            {
-                FILE *f1 = fopen("cachedEvents.txt", "r");
-                if (f1 == NULL ) 
-                {
-                    showDialog("File cachedEvents.txt not found!\n");
-                    return;
-                }
-
-                main_gridButtonCount = 0;
-                char rowStr[1024];
-
-                while (!feof(f1)) 
-                {
-                    fgets(rowStr, 1024, f1);
-                    rowStr[strlen(rowStr)-1] = 0; // remove newline byte
-                    gtk_grid_insert_row (GTK_GRID(main_eventGrid), main_gridButtonCount);
-
-                    //A button can be freed by the function 'gtk_container_remove ()'
-                    main_gridButton[main_gridButtonCount] = gtk_button_new_with_label (rowStr);
-                    gtk_button_set_alignment (GTK_BUTTON(main_gridButton[main_gridButtonCount]), 0.0, 0.5); // hor left, ver center
-                    
-                    //events with error will have a red color
-                    if(rowStr[14] != '>' && strstr(rowStr, "ERR") != NULL){
-                        gtk_widget_set_name(main_gridButton[main_gridButtonCount], "errbtn");
-                    }
-                    gtk_grid_attach (GTK_GRID(main_eventGrid), main_gridButton[main_gridButtonCount], 1, main_gridButtonCount, 1, 1);
-                    g_signal_connect(main_gridButton[main_gridButtonCount], "clicked", G_CALLBACK(on_event_grid_row_clicked), NULL);
-                    main_gridButtonCount ++;
-
-                }
-                fclose(f1);
-                gtk_widget_show_all(main_window);
-                return;
-
-            }else if(*cacheStatus == STATUS_FAILED)
-            {
-
-                //something has gone wrong
-                return;
-            }
-             
-        }
+        return;
     }else
     {
         showDialog("An error occured while creating a new process!");
+        gtk_spinner_stop (GTK_SPINNER(main_spinner));
+
         return;
     }
 
@@ -241,40 +201,83 @@ void on_main_fileChooser_clicked(GtkButton *f)
 //signals
 void sigquit_child() 
 {
-    on_midiClosed(); 
+    on_midiClosed();
+    gtk_spinner_stop (GTK_SPINNER(main_spinner)); 
     exit(0); 
+}
+
+void signaldoneparsing()
+{
+    FILE *f1 = fopen("cachedEvents.txt", "r");
+    if (f1 == NULL ) 
+    {
+        showDialog("File cachedEvents.txt not found!\n");
+        return;
+    }
+
+    char rowStr[1024];
+    unsigned int lineCount = 0;
+    while (!feof(f1)) 
+    {
+        fgets(rowStr, 1024, f1);
+        lineCount++;
+    }
+    fseek(f1, 0, SEEK_SET);
+
+    main_gridButtonCount = 0;
+    main_gridButton = calloc(lineCount, sizeof(GtkWidget *));
+
+    while (!feof(f1)) 
+    {
+        fgets(rowStr, 1024, f1);
+        rowStr[strlen(rowStr)-1] = 0; // remove newline byte
+        gtk_grid_insert_row (GTK_GRID(main_eventGrid), main_gridButtonCount);
+
+        //A button can be freed by the function 'gtk_container_remove ()'
+        main_gridButton[main_gridButtonCount] = gtk_button_new_with_label (rowStr);
+        gtk_button_set_alignment (GTK_BUTTON(main_gridButton[main_gridButtonCount]), 0.0, 0.5); // hor left, ver center
+        
+        //events with error will have a red color
+        if(rowStr[14] != '>' && strstr(rowStr, "ERR") != NULL){
+            gtk_widget_set_name(main_gridButton[main_gridButtonCount], "errbtn");
+        }
+        gtk_grid_attach (GTK_GRID(main_eventGrid), main_gridButton[main_gridButtonCount], 1, main_gridButtonCount, 1, 1);
+        g_signal_connect(main_gridButton[main_gridButtonCount], "clicked", G_CALLBACK(on_event_grid_row_clicked), NULL);
+        main_gridButtonCount ++;
+
+    }
+    fclose(f1);
+    gtk_widget_show_all(main_window);
+    gtk_spinner_stop (GTK_SPINNER(main_spinner));
+
+    return;
 }
 
 void sigcorrupt() 
 {
-    *cacheStatus = STATUS_FAILED;
     kill(pid_child, SIGQUIT);
     showDialog("MIDI file is corrupted!");
 }
 
 void sigtype2() 
 {
-    *cacheStatus = STATUS_FAILED;
     kill(pid_child, SIGQUIT);
     showDialog("MIDI file is type 2 which is not supported!");
 }
 
 void sigendoftrack() 
 {
-    *cacheStatus = STATUS_FAILED;
     kill(pid_child, SIGQUIT);
     showDialog("There seems to be a problem with the End of Track event!");
 }
 void sigfilenotfound() 
 {
-    *cacheStatus = STATUS_FAILED;
     kill(pid_child, SIGQUIT);
     showDialog("Coudln't open the file!");
 }
 
 void siggeneralerror() 
 {
-    *cacheStatus = STATUS_FAILED;
     kill(pid_child, SIGQUIT);
     showDialog("An error occured while parsing the file!");
 }
@@ -282,16 +285,26 @@ void siggeneralerror()
 //menu buttons
 void on_menu_new_activate(GtkMenuItem *m)
 {
-
+    
 }
 
 void on_menu_quit_activate(GtkMenuItem *m)
 {
-
+    kill(pid_child, SIGQUIT);
+    on_midiClosed();
+    exit(EXIT_SUCCESS);
 }
 
 void on_menu_about_activate(GtkMenuItem *m)
 {
+    GtkDialogFlags flags = GTK_DIALOG_DESTROY_WITH_PARENT;
+	GtkWidget *dialog = gtk_message_dialog_new (GTK_WINDOW(main_window),
+                                 flags,
+                                 GTK_MESSAGE_INFO,
+                                 GTK_BUTTONS_CLOSE,
+                                 "Ele Midi File Viewer\n\nDeveloped by ArashSM79.\nContact: @arashsm79 on LinkedIn, Instagram, \nFacebook, Telegram, Whatsapp\nEmail: arashsm79@yahoo.com");
+	gtk_dialog_run (GTK_DIALOG (dialog));
+	gtk_widget_destroy (dialog);
 
 }
 
@@ -317,10 +330,11 @@ void clearGrid()
     {
         gtk_container_remove(GTK_CONTAINER(main_eventGrid), main_gridButton[i]);            
     }
+    free(main_gridButton);
+
 }
 //progress bar
 
-	// gtk_progress_bar_set_fraction 
-	// 		(GTK_PROGRESS_BAR(main_progressBar), (gdouble) 1.00 );
+	gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR(main_progressBar), (gdouble) 1.00 );
 
     // gtk_widget_set_sensitive(main_play, FALSE);

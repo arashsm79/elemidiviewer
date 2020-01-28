@@ -3,7 +3,7 @@
 
 #include "midiparser.h"
 
-GuiStatus openMidiFileAndCreateEventCashe(char *filePath, pid_t *);
+void openMidiFileAndCreateEventCashe(char *filePath, pid_t *);
 void playMidiFile(GuiStatus *, pid_t *);
 void on_midiClosed();
 
