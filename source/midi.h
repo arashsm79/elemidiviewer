@@ -137,6 +137,8 @@ typedef struct
 	//microseconds per tick which is tempo / ticksPerQuarterNote 
 	unsigned int msPerTick;
 
+	unsigned int divisionType;
+
 	unsigned int ticksPerQuarterNote;
 
     unsigned int framePerSecond;

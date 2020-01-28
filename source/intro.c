@@ -13,6 +13,7 @@
 //function prototypes
 float convertNameToFrequency(char *n);
 void playNotes(Note *notesArray, size_t size);
+void playMidiNotes(Note *notesArray, size_t size);
 
 
 void playIntro(void)
@@ -95,10 +96,20 @@ void playNotes(Note *notesArray, size_t size)
 {
     for(int i = 0; i < size; i += 1)
         {
+            beep((notesArray + i)->frequency, (notesArray + i)->length + 130);
+        }
+}
+
+//// a simple function to iterate through the array of midi notes and play them
+void playMidiNotes(Note *notesArray, size_t size)
+{
+    for(int i = 0; i < size; i += 1)
+        {
             delay((notesArray + i)->delay);
             beep((notesArray + i)->frequency, (notesArray + i)->length + 130);
         }
 }
+
 
 // converting the given note name to its frequency using the header "notes.h"
 //could've used "reflections" but since the program must be pure C (not c++), did this :D

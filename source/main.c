@@ -13,6 +13,7 @@ int main()
     MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numberOfNotes);
     void ei_ui_fread(unsigned int *ptr, size_t size, size_t n, FILE *streamPtr);
     Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOfNotes, MidiCurrentStatus *);
+    void cleanUpAllocatedSpace(MidiTrack *tracks,unsigned int numberOfTracks ,NoteSequence *noteSequence);
 
     // _+_+_+_+_+( PHASE I )+_+_+_+_+_
     // Play the intro song using the intro.c source file 
@@ -35,31 +36,38 @@ int main()
     //setting the read data to  a midi current status struct
     //the default tempo is 120BPM that translates to 60000000 / 120 = 500000 microseconds per quarter note
     MidiCurrentStatus midiCurrentStatus;
+
+    //tempo is in terms of microseconds per quarter note
+    midiCurrentStatus.tempo = 60000000 / 120;
+
+    midiCurrentStatus.divisionType = midiHeader.devisionType;
+
     if(midiHeader.devisionType == 0)
     {
+        //microseconds per tick which is tempo / ticksPerQuarterNote 
+        midiCurrentStatus.msPerTick = midiCurrentStatus.tempo /  midiHeader.ticksPerQuarterNote;
         midiCurrentStatus.ticksPerQuarterNote = midiHeader.ticksPerQuarterNote;
-    }else
+
+    }else if(midiHeader.devisionType == 1)
     {
+        //microseconds per tick which is 1000000 / (tpf * fps)
+        midiCurrentStatus.msPerTick = 1000000 /  ( midiHeader.framePerSecond * midiHeader.ticksPerFrame);
         midiCurrentStatus.framePerSecond = midiHeader.framePerSecond;
         midiCurrentStatus.ticksPerFrame = midiHeader.ticksPerFrame;
 
     }
-    //tempo is in terms of microseconds per quarter note
-    midiCurrentStatus.tempo = 60000000 / 120;
-
-	//microseconds per tick which is tempo / ticksPerQuarterNote 
-    midiCurrentStatus.msPerTick = midiCurrentStatus.tempo / midiCurrentStatus.ticksPerQuarterNote;
     
 
     // _+_+_+_+_+( PHASE III )+_+_+_+_+_
     //initialize the tracks and populate them with events
     MidiTrack *tracks = calloc(midiHeader.tracks, sizeof(MidiTrack));
+    //there is a note sequence for every track
     NoteSequence *noteSequence = calloc(midiHeader.tracks, sizeof(NoteSequence));
 
     for(int i = 0; i < midiHeader.tracks; i++)
     {
         char chunkID[4];
-        //read 32 bits
+        //read 4 bytes
         fread(&chunkID, 1, 4, midiFile);
 
         unsigned int trackSize;
@@ -69,7 +77,7 @@ int main()
         tracks[i].midiEvents = readTrackEvents(midiFile, &(tracks[i].numberOfEvents), &(noteSequence[i].numberOfNotes));
 
 
-        //creates an array of notes using note on and note off events
+        //creates an array of notes using note on and note off events and parse other events
         noteSequence[i].notes = composeNotes(tracks[i].midiEvents, tracks[i].numberOfEvents, noteSequence[i].numberOfNotes, &midiCurrentStatus);
     }
     
@@ -79,8 +87,12 @@ int main()
     // _+_+_+_+_+( PHASE IV )+_+_+_+_+_
     for(int i = 0; i < midiHeader.tracks; i++)
     {
-        playNotes(noteSequence[i].notes, noteSequence[i].numberOfNotes);
+        playMidiNotes(noteSequence[i].notes, noteSequence[i].numberOfNotes);
     }
+
+
+    // _+_+_+_+_+( CLEAN UP )+_+_+_+_+_
+    cleanUpAllocatedSpace(tracks,midiHeader.tracks ,noteSequence);
 
     //close the midi file stream
     fclose(midiFile);
@@ -89,7 +101,39 @@ int main()
 ////////////////////////////////////////
 ////////////////////////////////////////
 ////////////////////////////////////////
+void cleanUpAllocatedSpace(MidiTrack *tracks,unsigned int numberOfTracks ,NoteSequence *noteSequence)
+{
+    //clean up tracks and their data
+    for(int i = 0; i < numberOfTracks; i++)
+    {
+        for(int j = 0; j < tracks[i].numberOfEvents; j++)
+        { 
+            if(tracks[i].midiEvents[j].eventType == META_EVENT)
+            {
+                free(tracks[i].midiEvents[j].metaEvent.data);
 
+            }else if(tracks[i].midiEvents[j].eventType == SYSEX_EVENT)
+            {
+                free(tracks[i].midiEvents[j].sysExEvent.data);
+            }
+        }
+        free(tracks[i].midiEvents);
+    }
+
+    //cleanup note sequence
+    for(int i = 0; i < numberOfTracks; i++)
+    {
+        free(noteSequence[i].notes);
+    }
+
+
+    free(tracks);
+    free(noteSequence);
+
+}
+////////////////////////////////////////
+////////////////////////////////////////
+////////////////////////////////////////
 //this functions matches note of events with their corresponding note on events and alculates their length and returns an array of notes 
 Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOfNotes, MidiCurrentStatus *midiCurrentStatus)
 {
@@ -120,16 +164,72 @@ Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOf
                 ;
                 //endian independently set the 3 byte data of previously read tempo as the current tempo
                 unsigned int newTempo = 0;
-
-             
                 ei_ui_byteArray(&newTempo, midiEvents[i].metaEvent.length, midiEvents[i].metaEvent.data);
-
-
-                //  newTempo = (midiEvents[i].metaEvent.data[2]<<0) | (midiEvents[i].metaEvent.data[1]<<8) | (midiEvents[i].metaEvent.data[0]<<16);
                 midiCurrentStatus->tempo = newTempo;
-                midiCurrentStatus->msPerTick = midiCurrentStatus->tempo / midiCurrentStatus->ticksPerQuarterNote; 
+
+                if(midiCurrentStatus->divisionType == 0)
+                { 
+                    midiCurrentStatus->msPerTick = midiCurrentStatus->tempo / midiCurrentStatus->ticksPerQuarterNote;
+
+                }else if(midiCurrentStatus->divisionType == 1)
+                {
+                    /* fixed. we cannot calculate msPerTick using tempo, fps, tpf, since:
+                        TimeBase = MicroTempo / MicrosPerPPQN
+                        SubFramesPerQuarterNote = MicroTempo/(Frames * SubFrames)
+                        SubFramesPerPPQN = SubFramesPerQuarterNote / TimeBase
+                        MicrosPerPPQN = SubFramesPerPPQN * Frames * SubFrames*/
+                }
                 break;
-            
+
+            //the rest doesnt effect the midi playback...
+            case SEQUENCE_NUMBER:
+                /* code */
+                break;
+            case TEXT_EVENT:
+                /* code */
+                break;
+            case COPYRIGHT_NOTICE:
+                /* code */
+                break;
+            case SEQUENCE_NAME:
+                /* code */
+                break;
+            case INSTRUMENT_NAME:
+                /* code */
+                break;
+            case LYRIC:
+                /* code */
+                break;
+            case MARKER:
+                /* code */
+                break;
+            case CUE_POINT:
+                /* code */
+                break;
+            case PROGRAM_NAME:
+                /* code */
+                break;
+            case DEVICE_NAME:
+                /* code */
+                break;
+            case CHANNEL_PREFIX:
+                /* code */
+                break;
+            case MIDI_PORT:
+                /* code */
+                break;
+            case SMPTE_OFFSET:
+                /* code */
+                break;
+            case TIME_SIGNATURE:
+                /* code */
+                break;
+            case KEY_SIGNATURE:
+                /* code */
+                break;
+            case SEQUENCER_SPECIFIC:
+                /* code */
+                break;
             default:
                 break;
             }
