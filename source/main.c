@@ -1,819 +1,237 @@
-#include <stdio.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <sys/types.h>
+#include <unistd.h>
+#include <string.h>
+#include <gtk/gtk.h>
 #include <math.h>
-#include "beep.h"
-#include "intro.h"
-#include "midi.h"
+#include <sys/mman.h>
+#include <signal.h> 
+#include "guiconnection.h"
+#include "midiparser.h"
 
+// Make them global
+//shared memory
+GuiStatus *cacheStatus;
+GuiStatus *playStatus;
+GuiStatus *filePlayStatus;
+int *isMainOpen;
 
 
-int main()
-{
-    unsigned int readVariableLengthValue(FILE *midiFile);
-    MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numberOfNotes);
-    void ei_ui_fread(unsigned int *ptr, size_t size, size_t n, FILE *streamPtr);
-    Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOfNotes, MidiCurrentStatus *, FILE *);
-    void cleanUpAllocatedSpace(MidiTrack *tracks,unsigned int numberOfTracks ,NoteSequence *noteSequence);
 
-    // _+_+_+_+_+( PHASE I )+_+_+_+_+_
-    // Play the intro song using the intro.c source file 
-    //playIntro();
-    
-    //open a midi file
-    FILE *midiFile = fopen("office.mid", "rb");
-    if(midiFile == NULL)
-    {
-        printf("An erorr occured when opening the file!\n");
-        return 1;
-    }
+//setting up the main window
+GtkBuilder *main_builder;
+GtkWidget *main_window;
 
-    //create a new file for writing out the events
-    FILE *midiEventCacheFile = fopen("cachedEvents.txt", "w");
-    if(midiEventCacheFile == NULL)
-    {
-        printf("An erorr occured when creating the event cache file!\n");
-        return 1;
-    }
-    // _+_+_+_+_+( PHASE II )+_+_+_+_+_
-    //print the midi file's header
-    MidiHeader midiHeader; 
-    printMidiHeader(&midiHeader, midiFile, midiEventCacheFile);
+//main windows widgets 
+GtkWidget *main_play;
+GtkWidget *main_pause;
+GtkWidget *main_fileChooser;
+GtkWidget *main_spinner;
+GtkWidget *main_progressBar;
+GtkWidget *main_eventGrid;
 
-    //setting the read data to  a midi current status struct
-    //the default tempo is 120BPM that translates to 60000000 / 120 = 500000 microseconds per quarter note
-    MidiCurrentStatus midiCurrentStatus;
 
-    //tempo is in terms of microseconds per quarter note
-    midiCurrentStatus.tempo = 60000000 / 120;
+//Menu bar widgets
+GtkWidget *menu_new;
+GtkWidget *menu_quit;
+GtkWidget *menu_about;
 
-    midiCurrentStatus.divisionType = midiHeader.devisionType;
+//child process that will play the music
+pid_t pidFirst;
 
-    if(midiHeader.devisionType == 0)
-    {
-        //microseconds per tick which is tempo / ticksPerQuarterNote 
-        midiCurrentStatus.msPerTick = midiCurrentStatus.tempo /  midiHeader.ticksPerQuarterNote;
-        midiCurrentStatus.ticksPerQuarterNote = midiHeader.ticksPerQuarterNote;
+GtkWidget *main_gridButton[1024];
+int	main_gridButtonCount = 0;
 
-    }else if(midiHeader.devisionType == 1)
-    {
-        //microseconds per tick which is 1000000 / (tpf * fps)
-        midiCurrentStatus.msPerTick = 1000000 /  ( midiHeader.framePerSecond * midiHeader.ticksPerFrame);
-        midiCurrentStatus.framePerSecond = midiHeader.framePerSecond;
-        midiCurrentStatus.ticksPerFrame = midiHeader.ticksPerFrame;
 
-    }
-    
+void on_destroy();
+void sigquit();
+void on_event_grid_row_clicked(GtkButton *);
 
-    // _+_+_+_+_+( PHASE III )+_+_+_+_+_
-    //initialize the tracks and populate them with events
-    MidiTrack *tracks = calloc(midiHeader.tracks, sizeof(MidiTrack));
-    //there is a note sequence for every track
-    NoteSequence *noteSequence = calloc(midiHeader.tracks, sizeof(NoteSequence));
+int main(int argc, char *argv[]) {
 
-    for(int i = 0; i < midiHeader.tracks; i++)
-    {
-        char chunkID[4];
-        //read 4 bytes
-        fread(&chunkID, 1, 4, midiFile);
-        fprintf(midiEventCacheFile, "%-22s -> %s \n", "Chunk Type", chunkID);
+	gtk_init(&argc, &argv); // init Gtk
 
-        unsigned int trackSize;
-        ei_ui_fread(&trackSize, sizeof(char), 4, midiFile);
-        fprintf(midiEventCacheFile, "%-22s -> %u bytes\n", "Track Legnth", trackSize);
+//---------------------------------------------------------------------
+// establish contact with xml code used to adjust widget settings
+//---------------------------------------------------------------------
+ 
+	main_builder = gtk_builder_new_from_file ("main.glade");
+ 
+	main_window = GTK_WIDGET(gtk_builder_get_object(main_builder, "main_window"));
 
-        //reads all of the contents of the track
-        tracks[i].midiEvents = readTrackEvents(midiFile, &(tracks[i].numberOfEvents), &(noteSequence[i].numberOfNotes));
+	g_signal_connect(main_window, "destroy", G_CALLBACK(on_destroy), NULL);
 
+    gtk_builder_connect_signals(main_builder, NULL);
 
-        //creates an array of notes using note on and note off events and parse other events
-        noteSequence[i].notes = composeNotes(tracks[i].midiEvents, tracks[i].numberOfEvents, noteSequence[i].numberOfNotes, &midiCurrentStatus, midiEventCacheFile);
-    }
-    
 
-    //closing the event cache file
-    fclose(midiEventCacheFile);
+	//initializing the widgets using heir IDs
+	main_play = GTK_WIDGET(gtk_builder_get_object(main_builder, "main_play"));
+	main_pause = GTK_WIDGET(gtk_builder_get_object(main_builder, "main_pause"));
+	main_fileChooser = GTK_WIDGET(gtk_builder_get_object(main_builder, "main_fileChooser"));
+	main_spinner = GTK_WIDGET(gtk_builder_get_object(main_builder, "main_spinner"));
+	main_progressBar = GTK_WIDGET(gtk_builder_get_object(main_builder, "main_progressBar"));
+	menu_new = GTK_WIDGET(gtk_builder_get_object(main_builder, "menu_new"));
+	menu_quit = GTK_WIDGET(gtk_builder_get_object(main_builder, "menu_quit"));
+	menu_about = GTK_WIDGET(gtk_builder_get_object(main_builder, "menu_about"));
+	main_eventGrid = GTK_WIDGET(gtk_builder_get_object(main_builder, "main_eventGrid"));
 
-    // _+_+_+_+_+( PHASE IV )+_+_+_+_+_
-    for(int i = 0; i < midiHeader.tracks; i++)
-    {
-        playMidiNotes(noteSequence[i].notes, noteSequence[i].numberOfNotes);
-    }
 
+	// setting up shared memories
 
-    // _+_+_+_+_+( CLEAN UP )+_+_+_+_+_
-    cleanUpAllocatedSpace(tracks,midiHeader.tracks ,noteSequence);
+	cacheStatus = mmap(NULL, sizeof(GuiStatus), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	*cacheStatus = STATUS_PROCESSING;
 
-    //close the midi file stream
-    fclose(midiFile);
+	playStatus = mmap(NULL, sizeof(GuiStatus), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	*playStatus = STATUS_PAUSE;
 
-}
-////////////////////////////////////////
-////////////////////////////////////////
-////////////////////////////////////////
-void cleanUpAllocatedSpace(MidiTrack *tracks,unsigned int numberOfTracks ,NoteSequence *noteSequence)
-{
-    //clean up tracks and their data
-    for(int i = 0; i < numberOfTracks; i++)
-    {
-        for(int j = 0; j < tracks[i].numberOfEvents; j++)
-        { 
-            if(tracks[i].midiEvents[j].eventType == META_EVENT)
-            {
-                free(tracks[i].midiEvents[j].metaEvent.data);
+    filePlayStatus = mmap(NULL, sizeof(GuiStatus), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	*filePlayStatus = STATUS_PROCESSING;
 
-            }else if(tracks[i].midiEvents[j].eventType == SYSEX_EVENT)
-            {
-                free(tracks[i].midiEvents[j].sysExEvent.data);
-            }
-        }
-        free(tracks[i].midiEvents);
-    }
+	isMainOpen = mmap(NULL, sizeof(int), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	*isMainOpen = 1;
 
-    //cleanup note sequence
-    for(int i = 0; i < numberOfTracks; i++)
-    {
-        free(noteSequence[i].notes);
-    }
 
+    //setting up css
+    GtkCssProvider *css_provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_data(css_provider, "button#errbtn { color: red; }", -1, NULL);
+    gtk_style_context_add_provider_for_screen(gdk_screen_get_default(),
+                               GTK_STYLE_PROVIDER(css_provider),
+                               GTK_STYLE_PROVIDER_PRIORITY_USER);
+//-----------------------------------
 
-    free(tracks);
-    free(noteSequence);
+	gtk_widget_show_all(main_window);
 
-}
-////////////////////////////////////////
-////////////////////////////////////////
-////////////////////////////////////////
-//this functions matches note of events with their corresponding note on events and alculates their length and returns an array of notes 
-Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOfNotes, MidiCurrentStatus *midiCurrentStatus, FILE *midiEventCacheFile)
-{
-    //prototypes
-    float turnMidiNoteNumberToFrequency(unsigned int);
-    void findCorrespondingNoteOn(Note *noteArray, size_t noteCount, unsigned int noteNumber, unsigned int playTime, MidiCurrentStatus *);
-    void ei_ui_byteArray(unsigned int *ptr, size_t dataSize, unsigned char *data);
+	gtk_main();
 
-    Note *noteArray = calloc(numberOfNotes, sizeof(Note));
-    size_t noteCount = 0;
-
-    // the elapsed time since the first event in ticks
-    unsigned int playTime;
-
-    for(int i = 0; i < numberOfEvents && noteCount <= numberOfNotes; i++)
-    {
-        //ad the current events delta time to total Playtime
-        playTime += midiEvents[i].deltaTime;
-
-        //print the current events delta time
-        fprintf(midiEventCacheFile, "%-10u:",midiEvents[i].deltaTime);
-
-
-
-        //control statements for handling midi events
-        switch (midiEvents[i].eventType)
-        {
-        //Meta Event
-        case META_EVENT:
-
-            //print the current events channel
-            fprintf(midiEventCacheFile, "(%-2u) ",midiEvents[i].metaEvent.channelNumber);
-
-            switch (midiEvents[i].metaEvent.specificEventType)
-            {
-            case SET_TEMPO:
-                ;
-                //endian independently set the 3 byte data of previously read tempo as the current tempo
-                unsigned int newTempo = 0;
-                ei_ui_byteArray(&newTempo, midiEvents[i].metaEvent.length, midiEvents[i].metaEvent.data);
-                midiCurrentStatus->tempo = newTempo;
-
-                if(midiCurrentStatus->divisionType == 0)
-                { 
-                    midiCurrentStatus->msPerTick = midiCurrentStatus->tempo / midiCurrentStatus->ticksPerQuarterNote;
-
-                }else if(midiCurrentStatus->divisionType == 1)
-                {
-                    /* fixed. we cannot calculate msPerTick using tempo, fps, tpf, since:
-                        TimeBase = MicroTempo / MicrosPerPPQN
-                        SubFramesPerQuarterNote = MicroTempo/(Frames * SubFrames)
-                        SubFramesPerPPQN = SubFramesPerQuarterNote / TimeBase
-                        MicrosPerPPQN = SubFramesPerPPQN * Frames * SubFrames*/
-                }
-
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s -> %u", "Set Tempo", newTempo);
-
-                break;
-
-            //the rest doesnt effect the midi playback...
-            case SEQUENCE_NUMBER:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s -> MSB:%u LSB:%u", "Sequence Number", midiEvents[i].metaEvent.data[0], midiEvents[i].metaEvent.data[1]);
-                break;
-            case TEXT_EVENT:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s", "Text Event");
-                fprintf(midiEventCacheFile, " -> text: ");
-                for(int j = 0; j < midiEvents[i].metaEvent.length; j++)
-                    fprintf(midiEventCacheFile, "%c", midiEvents[i].metaEvent.data[j]);
-
-                break;
-            case COPYRIGHT_NOTICE:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s", "Copyright Notice");
-                fprintf(midiEventCacheFile, " -> text: ");
-                for(int j = 0; j < midiEvents[i].metaEvent.length; j++)
-                    fprintf(midiEventCacheFile, "%c", midiEvents[i].metaEvent.data[j]);
-                break;
-            case SEQUENCE_NAME:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s", "Sequence Name");
-                fprintf(midiEventCacheFile, " -> text: ");
-                for(int j = 0; j < midiEvents[i].metaEvent.length; j++)
-                    fprintf(midiEventCacheFile, "%c", midiEvents[i].metaEvent.data[j]);
-                break;
-            case INSTRUMENT_NAME:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s", "Instrument Name");
-                fprintf(midiEventCacheFile, " -> text: ");
-                for(int j = 0; j < midiEvents[i].metaEvent.length; j++)
-                    fprintf(midiEventCacheFile, "%c", midiEvents[i].metaEvent.data[j]);
-                break;
-            case LYRIC:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s", "Lyric");
-                fprintf(midiEventCacheFile, " -> text: ");
-                for(int j = 0; j < midiEvents[i].metaEvent.length; j++)
-                    fprintf(midiEventCacheFile, "%c", midiEvents[i].metaEvent.data[j]);
-                break;
-            case MARKER:
-                ///print the current event
-                fprintf(midiEventCacheFile, "%-20s", "Marker");
-                fprintf(midiEventCacheFile, " -> text: ");
-                for(int j = 0; j < midiEvents[i].metaEvent.length; j++)
-                    fprintf(midiEventCacheFile, "%c", midiEvents[i].metaEvent.data[j]);
-                break;
-            case CUE_POINT:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s", "Cue Point");
-                fprintf(midiEventCacheFile, " -> text: ");
-                for(int j = 0; j < midiEvents[i].metaEvent.length; j++)
-                    fprintf(midiEventCacheFile, "%c", midiEvents[i].metaEvent.data[j]);
-                break;
-            case PROGRAM_NAME:
-                ///print the current event
-                fprintf(midiEventCacheFile, "%-20s", "Program Name");
-                fprintf(midiEventCacheFile, " -> text: ");
-                for(int j = 0; j < midiEvents[i].metaEvent.length; j++)
-                    fprintf(midiEventCacheFile, "%c", midiEvents[i].metaEvent.data[j]);
-                break;
-            case DEVICE_NAME:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s", "Device Name");
-                fprintf(midiEventCacheFile, " -> text: ");
-                for(int j = 0; j < midiEvents[i].metaEvent.length; j++)
-                    fprintf(midiEventCacheFile, "%c", midiEvents[i].metaEvent.data[j]);
-                break;
-            case CHANNEL_PREFIX:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s -> Ch:%u", "Channel Prefix", midiEvents[i].metaEvent.data[0]);
-                break;
-            case MIDI_PORT:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s -> %u", "Midi Port", midiEvents[i].metaEvent.data[0]);
-                break;
-            case SMPTE_OFFSET:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s -> H:%u M:%u Sec:%u Fr:%u SubFr:%u", "SMPTE Offset", midiEvents[i].metaEvent.data[0], 
-                midiEvents[i].metaEvent.data[1],
-                midiEvents[i].metaEvent.data[2],
-                midiEvents[i].metaEvent.data[3],
-                midiEvents[i].metaEvent.data[4]);
-                break;
-            case TIME_SIGNATURE:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s -> Num:%u Den:%u Met:%u 32nds:%u", "Time Signature", midiEvents[i].metaEvent.data[0], 
-                midiEvents[i].metaEvent.data[1],
-                midiEvents[i].metaEvent.data[2],
-                midiEvents[i].metaEvent.data[3]);
-                break;
-            case KEY_SIGNATURE:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s -> Key:%u Scale:%u", "Key Signature", midiEvents[i].metaEvent.data[0], midiEvents[i].metaEvent.data[1]);                break;
-            case SEQUENCER_SPECIFIC:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s -> Len:%u", "Sequence Specific", midiEvents[i].metaEvent.length);
-                break;
-            default:
-                break;
-            }
-            break;
-
-        //Midi channel event
-        case MIDI_CHANNEL_EVENT:
-            //print the current events channel
-            fprintf(midiEventCacheFile, "(%-2u) ",midiEvents[i].channelEvent.channelNumber);
-            switch (midiEvents[i].channelEvent.specificEventType)
-            {
-            case NOTE_ON:
-                noteArray[noteCount].frequency = turnMidiNoteNumberToFrequency(midiEvents[i].channelEvent.param1);
-                noteArray[noteCount].midiNoteNumber = midiEvents[i].channelEvent.param1;
-                noteArray[noteCount].velocity = midiEvents[i].channelEvent.param2;
-                noteArray[noteCount].playTime = playTime;
-                noteArray[noteCount].delay = (midiEvents[i].deltaTime * midiCurrentStatus->msPerTick) / 1000;
-                noteCount++;
-
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s -> #%u V:%u", "Note On", midiEvents[i].channelEvent.param1, midiEvents[i].channelEvent.param2);
-                
-                break;
-            case NOTE_OFF:
-                findCorrespondingNoteOn(noteArray, noteCount, midiEvents[i].channelEvent.param1, playTime, midiCurrentStatus);
-
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s -> #%u V:%u", "Note Off", midiEvents[i].channelEvent.param1, midiEvents[i].channelEvent.param2);
-                break;
-            case POLY_AFTERTOUCH:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s -> #%u val:%u", "Poly Aftertouch", midiEvents[i].channelEvent.param1, midiEvents[i].channelEvent.param2);
-                break;
-            case CONTROL_CHANGE:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s -> #:%u val:%u", "Control Change", midiEvents[i].channelEvent.param1, midiEvents[i].channelEvent.param2);
-                break;
-            case PROGRAM_CHNG:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s -> #:%u", "Program Change", midiEvents[i].channelEvent.param1);
-                break;
-            case CHANNEL_AFTERTOUCH:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s -> #%u", "Channel Aftertouch", midiEvents[i].channelEvent.param1);
-                break;
-            case PITCH_BEND:
-                //print the current event
-                fprintf(midiEventCacheFile, "%-20s -> lsb:%u msb:%u", "Pitch Bend", midiEvents[i].channelEvent.param1, midiEvents[i].channelEvent.param2);
-                break;
-            default:
-                break;
-            }
-            break;
-
-        //System exclusive event
-        case SYSEX_EVENT:
-            //print the current events channel
-            fprintf(midiEventCacheFile, "(%-2u) ",midiEvents[i].sysExEvent.channelNumber);
-
-            fprintf(midiEventCacheFile, "%-20s -> Len:%u", "SysEx Event", midiEvents[i].sysExEvent.length);
-
-            break;
-        
-        default:
-            break;
-        }
-
-        //print a new line
-        fprintf(midiEventCacheFile, "\n");
-    }
-    return noteArray;
-}
-
-////////////////////////////////////////
-////////////////////////////////////////
-////////////////////////////////////////
-
-void findCorrespondingNoteOn(Note *noteArray, size_t noteCount, unsigned int noteNumber, unsigned int playTime, MidiCurrentStatus * midiCurrentStatus)
-{
-    for(int i = noteCount - 1; i >= 0; i--)
-    {
-        if(noteArray[i].midiNoteNumber == noteNumber)
-        {
-            noteArray[i].length = ((playTime - noteArray[i].playTime) * midiCurrentStatus->msPerTick) / 1000;
-            return;
-        }
-    }
-}
-
-////////////////////////////////////////
-////////////////////////////////////////
-////////////////////////////////////////
-
-
-MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numberOfNotes)
-{
-    //prototypes
-    unsigned int readVariableLengthValue(FILE *midiFile);
-    void ei_ui_fread(unsigned int *ptr, size_t size, size_t n, FILE *streamPtr);
-
-    //a counter for the number of note-on events which dont have 0 velocity
-    size_t noteCount = 0;
-
-    size_t trackEventCount = 0;
-    //we'll dynamically increase the buffer if it gets filled up
-    size_t trackEventCountBuffer = 100;
-    MidiEvent *midiEvents = calloc(trackEventCountBuffer, sizeof(MidiEvent));
-
-
-
-    //read delta time
-    unsigned int deltaTime = readVariableLengthValue(midiFile);
-    midiEvents[trackEventCount].deltaTime = deltaTime;
-
-    unsigned int eventCode;
-    unsigned int previousEventCode; //for running status
-    //read one byte
-    ei_ui_fread(&eventCode, 1, 1, midiFile);
-
-
-    /*This meta event associates a MIDI channel with following meta events. It's effect is terminated by another MIDI Channel Prefix event or any non- Meta event.
-    It is often used before an Instrument Name Event to specify which channel an instrument name represents.*/ 
-    unsigned int midiChannelPrefix = 0;
-
-
-    //read events until end of track
-    while(1)
-    {
-        //get the first 4 bit of event code from right (mask = 11110000)
-        unsigned int first4BitOfEventCode = eventCode & (0xF0);
-        
-        if(eventCode >= 0xF0 && eventCode <= 0xFF)
-        {   
-            previousEventCode = eventCode;
-            //this event is a metaevent or sysex
-
-
-            if(eventCode == 0xFF)
-            {
-                //this is a meta event
-                midiEvents[trackEventCount].eventType = META_EVENT;
-
-
-                //read the type of metaevent
-                unsigned int metaEventType;
-                //read one byte
-                ei_ui_fread(&metaEventType, 1, 1, midiFile);
-
-                //setting the event type value
-                midiEvents[trackEventCount].metaEvent.specificEventType = metaEventType;
-
-
-
-                //get the length
-                unsigned int metaEventLength;
-                if(metaEventType == SEQUENCER_SPECIFIC)
-                {
-                    metaEventLength = readVariableLengthValue(midiFile);
-
-                }else
-                {
-                    //read one byte
-                    ei_ui_fread(&metaEventLength, 1, 1, midiFile);
-                }
-                midiEvents[trackEventCount].metaEvent.length = metaEventLength;
-
-
-                //break if it reaches the end of track
-                if(metaEventType == END_OF_TRACK)
-                {
-                    *numberOfEvents = trackEventCount;
-                    *numberOfNotes = noteCount;
-                    return midiEvents;
-                }
-
-
-                //read and set data
-                midiEvents[trackEventCount].metaEvent.data = calloc(metaEventLength, sizeof(char));
-                fread(midiEvents[trackEventCount].metaEvent.data, sizeof(char), metaEventLength, midiFile);
-
-
-
-                //if it was a channel prefix set the channel
-                if (metaEventType == CHANNEL_PREFIX)
-                {
-                    midiChannelPrefix = midiEvents[trackEventCount].metaEvent.data[0];
-                }
-
-
-                //set the channel of curent event
-                midiEvents[trackEventCount].metaEvent.channelNumber = midiChannelPrefix;
-                
-                
-                
-            }else
-            {
-                //this is a sysex event
-                midiEvents[trackEventCount].eventType = SYSEX_EVENT;
-
-                //set the length
-                unsigned int sysExLength = readVariableLengthValue(midiFile);
-                midiEvents[trackEventCount].sysExEvent.length = sysExLength;
-
-                //read and set the data
-                midiEvents[trackEventCount].sysExEvent.data = calloc(sysExLength, sizeof(char));
-                fread(midiEvents[trackEventCount].sysExEvent.data, sizeof(char), sysExLength, midiFile);
-
-                //set the channel of curent event
-                midiEvents[trackEventCount].sysExEvent.channelNumber = midiChannelPrefix;    
-            }
-            
-
-        }else if(eventCode >= 0x80 && eventCode <= 0xEF)
-        {
-            //this event is a midichannel event
-            previousEventCode = eventCode;
-
-            midiChannelPrefix = 0;
-            /*CHANNEL_PREFIX is used to associate any subsequent SysEx and Meta events with a particular MIDI channel, 
-            and will remain in effect until the next MIDI Channel Prefix Meta event or the next MIDI event.*/
-
-            // Delta Time 	Event Type Value 	MIDI Channel 	Parameter 1 	Parameter 2
-            midiEvents[trackEventCount].eventType = MIDI_CHANNEL_EVENT;
-
-            //setting the event type value
-            midiEvents[trackEventCount].channelEvent.specificEventType = first4BitOfEventCode;
-            
-            //this is the channel number (mask = 00001111)
-            unsigned int second4BitOfEventCode = eventCode & (0x0F);
-            midiEvents[trackEventCount].channelEvent.channelNumber = second4BitOfEventCode;
-
-            //getting the first parameter 
-            unsigned int param1;
-            //read one byte
-            ei_ui_fread(&param1, 1, 1, midiFile);
-            midiEvents[trackEventCount].channelEvent.param1 = param1;
-
-            if(first4BitOfEventCode != PROGRAM_CHNG && first4BitOfEventCode != CHANNEL_AFTERTOUCH)
-            { 
-                //getting the second parameter 
-                unsigned int param2;
-                //read one byte
-                ei_ui_fread(&param2, 1, 1, midiFile);
-                midiEvents[trackEventCount].channelEvent.param2 = param2;
-
-                //if the velocity of a noteon event was zero, turn in into a note off
-                if(first4BitOfEventCode == NOTE_ON && param2 == 0)
-                {
-                    midiEvents[trackEventCount].channelEvent.specificEventType = NOTE_OFF;
-                }else if(first4BitOfEventCode == NOTE_ON && param2 != 0)
-                {
-                    noteCount++;
-                }
-            }
-
-            
-
-        }else
-        {
-            //this is a running status
-            /* The MIDI spec allows for a MIDI message to be sent without its Status byte
-            as long as the previous, transmitted message had the same Status. */
-
-            midiEvents[trackEventCount].eventType = MIDI_CHANNEL_EVENT;
-
-            //get the first 4 bit of previous event code from right (mask = 11110000)
-            first4BitOfEventCode = previousEventCode & (0xF0);
-
-            //setting the event type value
-            midiEvents[trackEventCount].channelEvent.specificEventType = first4BitOfEventCode;
-            
-            //this is the channel number (mask = 00001111)
-            unsigned int second4BitOfEventCode = previousEventCode & (0x0F);
-            midiEvents[trackEventCount].channelEvent.channelNumber = second4BitOfEventCode;
-
-            //since this is a running status the current eventcode we just read is actually a parameter
-            unsigned int param1 = eventCode;
-            midiEvents[trackEventCount].channelEvent.param1 = param1;
-
-            if(first4BitOfEventCode != PROGRAM_CHNG && first4BitOfEventCode != CHANNEL_AFTERTOUCH)
-            { 
-                //getting the second parameter 
-                unsigned int param2;
-                //read one byte
-                ei_ui_fread(&param2, 1, 1, midiFile);
-                midiEvents[trackEventCount].channelEvent.param2 = param2;
-
-                //if the velocity of a noteon event was zero, turn in into a note off
-                if(first4BitOfEventCode == NOTE_ON && param2 == 0)
-                {
-                    midiEvents[trackEventCount].channelEvent.specificEventType = NOTE_OFF;
-
-                }else if(first4BitOfEventCode == NOTE_ON && param2 != 0)
-                {
-                    noteCount++;
-                }
-            }
-
-
-            
-
-            
-        }
-        
-
-        //increment the counter for midiEvents array
-        trackEventCount++;
-
-        //check the count and buffer, if it is realloc it
-        if(trackEventCount == trackEventCountBuffer)
-        {
-            trackEventCountBuffer *=3;
-            MidiEvent *dummyptr;
-            dummyptr = realloc(midiEvents, (trackEventCountBuffer) * sizeof(MidiEvent));
-            if(dummyptr == NULL)
-            {
-                printf("An erorr has occured");
-                return dummyptr;
-            }else
-            {
-                midiEvents = dummyptr;
-            }
-            
-
-        }
-        //read next delta time
-        deltaTime = readVariableLengthValue(midiFile);
-        //fread(&deltaTime, 1, 1, midiFile);
-        midiEvents[trackEventCount].deltaTime = deltaTime;
-
-        // the next event code
-        ei_ui_fread(&eventCode, 1, 1, midiFile); 
-    }
-}
-////////////////////////////////////////
-////////////////////////////////////////
-////////////////////////////////////////
-
-// reads a variable length value from the file
-unsigned int readVariableLengthValue(FILE *midiFile)
-{
-    void ei_ui_fread(unsigned int *ptr, size_t size, size_t n, FILE *streamPtr);
-	unsigned int final;
-	int c;
-
-	ei_ui_fread(&c, sizeof(char), 1, midiFile);
-
-	final = c;
-
-	if(c & 128) 
-    {
-		final &= 127;
-		do
-        {
-			ei_ui_fread(&c, sizeof(char), 1, midiFile);
-			final = (final << 7) + (c & 127);
-		} while(c & 128);
+	return EXIT_SUCCESS;
 	}
-	return final;
+
+//......................................................................................
+
+//on program destroy
+void on_destroy()
+{
+	//set the flag
+	//*isMainOpen = 0;
+    kill(pidFirst, SIGQUIT);
+	gtk_main_quit();
 }
 
-
-////////////////////////////////////////
-////////////////////////////////////////
-////////////////////////////////////////
-
-
-void printMidiHeader(MidiHeader *midiHeader, FILE *midiFile, FILE *midiEventCacheFile)
+//buttons
+void on_main_play_clicked(GtkButton *b)
 {
-    //principle of least privilege
-    void readHeaderChunk(MidiHeader *, FILE *);
-
-    readHeaderChunk(midiHeader, midiFile);
-
-    fprintf(midiEventCacheFile, "%-22s -> %s \n", "Chunk Type", midiHeader->chunkType);
-    fprintf(midiEventCacheFile, "%-22s -> %u bytes\n", "Header Legnth", midiHeader->length);
-    fprintf(midiEventCacheFile, "%-22s -> %u \n", "Format", midiHeader->format);
-    fprintf(midiEventCacheFile, "%-22s -> %u \n", "Tracks", midiHeader->tracks);
-    if(midiHeader->devisionType == 1)
-    {
-        fprintf(midiEventCacheFile, "%-22s -> %u", "Frame Per Second", midiHeader->framePerSecond);
-        fprintf(midiEventCacheFile, "%-22s -> %u", "Ticks Per Frame", midiHeader->ticksPerFrame);
-
-    }else if(midiHeader->devisionType == 0)
-    {
-        fprintf(midiEventCacheFile, "%-22s -> %u\n\n\n", "Ticks Per Quarter Note", midiHeader->ticksPerQuarterNote);
-    }
+    //resume the music process
+    *playStatus = STATUS_PLAY;
 
 }
 
-
-////////////////////////////////////////
-////////////////////////////////////////
-////////////////////////////////////////
-
-
-//reads the content of the given midiheader
-void readHeaderChunk(MidiHeader *midiHeader, FILE *fptr)
+void on_main_pause_clicked(GtkButton *b)
 {
-    //principle of least privilege
-    void ei_ui_fread(unsigned int *ptr, size_t size, size_t n, FILE *streamPtr);
-
-    //read 32 bits
-    fread(&(midiHeader->chunkType), 1, 4, fptr);
-   
-    //read 32 bits
-    ei_ui_fread(&(midiHeader->length), 4, 1, fptr);
-
-    //read 16 bits
-    ei_ui_fread(&(midiHeader->format), 1, 2, fptr);
-
-    //read 16 bits
-    ei_ui_fread(&(midiHeader->tracks), 1, 2, fptr);
-
-    //read 16 bits
-    ei_ui_fread(&(midiHeader->devision), 1, 2, fptr);
-
-
-    //reading the first bit of devision with a mask (to specify devision type)
-    unsigned int mask = 1 << 15;
-    midiHeader->devisionType = midiHeader->devision & mask;
-    midiHeader->devisionType = midiHeader->devisionType >> 15;
-
-    if(midiHeader->devisionType == 0)
-    {
-
-        midiHeader->ticksPerQuarterNote = midiHeader->devision;
-
-    }else if(midiHeader->devisionType == 1)
-    {
-        
-        //with masks and using bitwise shift operator we can extract the wanted data from devision
-        //00000000 00000000 0------- ^^^^^^^^
-        // - are fps
-        // ^ are tpf
-
-        unsigned int maskFPS = 0x7F00;
-        // fps mask: 00000000 00000000 01111111 00000000
-        midiHeader->framePerSecond = (midiHeader->devision & maskFPS) >> 8;
-
-        
-        unsigned int maskTPF = 0x00FF;
-        //tpf mask: 00000000 00000000 00000000 11111111
-        midiHeader->ticksPerFrame = midiHeader->devision & maskTPF;
-    }
-
-    // a controll statement for header chunks larger than 6 bytes
-    if(midiHeader->length > 6)
-    {
-        printf("* Warning: This is not a standard Midi File!");
-        int numberOfBytesOfAdditionalInformationInHeader = midiHeader->length - 6;
-        int additionalInformationInHeader;
-        fread(&additionalInformationInHeader, 1, numberOfBytesOfAdditionalInformationInHeader, fptr);
-    }
+    //pause the music process
+    *playStatus = STATUS_PAUSE;
 }
 
-
-////////////////////////////////////////
-////////////////////////////////////////
-////////////////////////////////////////
-
-
-
-//Endian-independent fread function to read unsigned int
-void ei_ui_fread(unsigned int *ptr, size_t size, size_t n, FILE *streamPtr)
+void on_event_grid_row_clicked(GtkButton *b)
 {
-    size_t dataSize = size * n;
-    unsigned char data[dataSize];
-
-    fread(data, size, n, streamPtr);
-    *ptr = 0;
-
-    for(int i = 0, j = (dataSize - 1) * 8; i < dataSize && j >= 0; i+=1, j-=8)
-    {
-        *ptr |= data[i]<<j;
-    }
+	printf("You selected: %s\n", gtk_button_get_label (b));
 
 }
 
-
-////////////////////////////////////////
-////////////////////////////////////////
-////////////////////////////////////////
-
-
-//Endian-independent function to read unsigned int from a byte array
-void ei_ui_byteArray(unsigned int *ptr, size_t dataSize, char unsigned *data)
+//file chooser
+//void on_main_fileChooser_file_set(GtkFileChooserButton *f)
+void on_main_fileChooser_clicked(GtkButton *f)
 {
-    *ptr = 0;
 
-    for(int i = 0, j = (dataSize - 1) * 8; i < dataSize && j >= 0; i+=1, j-=8)
+    pidFirst = fork();
+    if(pidFirst == 0)
     {
-        *ptr |= data[i]<<j;
+        //FIRST CHILD
+        signal(SIGQUIT, sigquit);
+        *cacheStatus = openMidiFileAndCreateEventCashe("believer.mid");
+        *filePlayStatus = playMidiFile(playStatus);
+        exit(0);
+     
+    }else if(pidFirst > 0)
+    {
+        //parent (main)
+        while(1)
+        { 
+            if(*cacheStatus == STATUS_DONE)
+            {
+
+                FILE *f1 = fopen("cachedEvents.txt", "r");
+                if (f1 == NULL ) 
+                {
+                    printf("File cachedEvents.txt not found\n");
+                    //EXIT_FAILURE
+                    return;
+                }
+
+                main_gridButtonCount = 0;
+                char rowStr[1024];
+
+                while (!feof(f1)) 
+                {
+                    fgets(rowStr, 1024, f1);
+                    rowStr[strlen(rowStr)-1] = 0; // remove newline byte
+                    gtk_grid_insert_row (GTK_GRID(main_eventGrid), main_gridButtonCount);
+
+            //		A button can be freed by the function 'gtk_container_remove ()'
+                    main_gridButton[main_gridButtonCount] = gtk_button_new_with_label (rowStr);
+                    gtk_button_set_alignment (GTK_BUTTON(main_gridButton[main_gridButtonCount]), 0.0, 0.5); // hor left, ver center
+                    
+                    //events with error will have a red color
+                    if(rowStr[14] != '>' && strstr(rowStr, "ERR") != NULL){
+                        gtk_widget_set_name(main_gridButton[main_gridButtonCount], "errbtn");
+                    }
+                    gtk_grid_attach (GTK_GRID(main_eventGrid), main_gridButton[main_gridButtonCount], 1, main_gridButtonCount, 1, 1);
+                    g_signal_connect(main_gridButton[main_gridButtonCount], "clicked", G_CALLBACK(on_event_grid_row_clicked), NULL);
+                    main_gridButtonCount ++;
+
+                }
+                fclose(f1);
+                gtk_widget_show_all(main_window);
+                break;
+            }else if(*cacheStatus == STATUS_FAILED)
+            {
+                    //EXIT_FAILURE
+                break;
+            }
+             
+        }
+    }else
+    {
+        //EXIT_FAILURE
+        return;
     }
-    unsigned int new;
-    new = (data[2]<<0) | (data[1]<<8) | (data[0]<<16);
 
-}
-
-
-float turnMidiNoteNumberToFrequency(unsigned int noteNumber)
-{
-    //frequency of A4
-    int a = 440; 
-
-    return (a / 32) * pow(2, ((noteNumber - 9) / 12.0));
     
 }
+//signals
+void sigquit() 
+{
+    on_midiClosed(); 
+    exit(0); 
+} 
+//menu buttons
+void on_menu_new_activate(GtkMenuItem *m)
+{
 
-////////////////////////////////////////
-////////////////////////////////////////
-////////////////////////////////////////
+}
 
+void on_menu_quit_activate(GtkMenuItem *m)
+{
 
+}
+
+void on_menu_about_activate(GtkMenuItem *m)
+{
+
+}
+
+//progress bar
+
+	// gtk_progress_bar_set_fraction 
+	// 		(GTK_PROGRESS_BAR(main_progressBar), (gdouble) 1.00 );
 

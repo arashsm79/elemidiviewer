@@ -1,10 +1,9 @@
 #include <stdio.h>
+#include <stdlib.h>
 #include "intro.h"
 #include "beep.h"
 #include "notes.h"
 #include <string.h>
-#include <stdlib.h>
-#include <time.h>
 
 #define STRING_SIZE 4
 #define INCREASE_SIZE 50
@@ -13,8 +12,6 @@
 //function prototypes
 float convertNameToFrequency(char *n);
 void playNotes(Note *notesArray, size_t size);
-void playMidiNotes(Note *notesArray, size_t size);
-
 
 void playIntro(void)
 {
@@ -80,32 +77,12 @@ void playIntro(void)
     fclose(fPtr);
     
 }
-//delay function
-void delay(int milliseconds)
-{
-    long pause;
-    clock_t now,then;
 
-    pause = milliseconds*(CLOCKS_PER_SEC/1000);
-    now = then = clock();
-    while( (now-then) < pause )
-        now = clock();
-}
 // a simple function to iterate through the array of notes and play them
 void playNotes(Note *notesArray, size_t size)
 {
     for(int i = 0; i < size; i += 1)
         {
-            beep((notesArray + i)->frequency, (notesArray + i)->length + 130);
-        }
-}
-
-//// a simple function to iterate through the array of midi notes and play them
-void playMidiNotes(Note *notesArray, size_t size)
-{
-    for(int i = 0; i < size; i += 1)
-        {
-            delay((notesArray + i)->delay);
             beep((notesArray + i)->frequency, (notesArray + i)->length + 130);
         }
 }

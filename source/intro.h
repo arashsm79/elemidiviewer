@@ -4,7 +4,6 @@
 #include "midi.h"
 
 void playIntro(void);
-void playMidiNotes(Note *notesArray, size_t size);
 
 
 #endif
