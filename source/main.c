@@ -10,11 +10,14 @@
 #include "guiconnection.h"
 #include "midiparser.h"
 
-// Make them global
+// Make them global childStatus
 //shared memory
 GuiStatus *playStatus;
+GuiStatus *childStatus;
+double *progressBarFraction;
 //process ids
 pid_t pid_child;
+pid_t *pid_child_pointer = NULL;
 pid_t *pid_parent;
 
 
@@ -44,7 +47,8 @@ GtkWidget *menu_about;
 GtkWidget **main_gridButton;
 int	main_gridButtonCount = 0;
 
-int isFirstTimeClickedOnOpen = 1;
+//a flag for checking if the grid is empty
+GuiStatus gridStatus = STATUS_CLEANED;
 
 
 //signals
@@ -55,6 +59,7 @@ void sigendoftrack();
 void sigfilenotfound();
 void siggeneralerror();
 void signaldoneparsing();
+void sigsetfraction();
 
 
 void on_destroy();
@@ -66,9 +71,7 @@ int main(int argc, char *argv[]) {
 
 	gtk_init(&argc, &argv); // init Gtk
 
-//---------------------------------------------------------------------
-// establish contact with xml code used to adjust widget settings
-//---------------------------------------------------------------------
+//connect xml code 
  
 	main_builder = gtk_builder_new_from_file ("main.glade");
  
@@ -93,11 +96,17 @@ int main(int argc, char *argv[]) {
 
 
 	// setting up shared memories
-	playStatus = mmap(NULL, sizeof(GuiStatus), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	playStatus = mmap(NULL, sizeof(GuiStatus *), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 	*playStatus = STATUS_PAUSE;
 
-	pid_parent = mmap(NULL, sizeof(pid_t), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+    childStatus = mmap(NULL, sizeof(GuiStatus *), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+	*childStatus = STATUS_CLOSE;
+
+	pid_parent = mmap(NULL, sizeof(pid_t *), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
 	*pid_parent = 1;
+
+    progressBarFraction = mmap(NULL, sizeof(pid_t *), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        *progressBarFraction = 0;
 
 
     //setting up css
@@ -122,7 +131,10 @@ void on_destroy()
 {
 	//set the flag
     gtk_spinner_stop (GTK_SPINNER(main_spinner));
-    kill(pid_child, SIGQUIT);
+
+    if(*childStatus == STATUS_OPEN)
+        kill(pid_child, SIGQUIT);
+
 	gtk_main_quit();
 }
 
@@ -151,31 +163,41 @@ void on_main_fileChooser_clicked(GtkButton *f)
     gtk_spinner_start (GTK_SPINNER(main_spinner));
 
     //clean up everything before opening up another file
-    if(isFirstTimeClickedOnOpen)
+    if(gridStatus == STATUS_UNCLEAN)
     { 
-        isFirstTimeClickedOnOpen = 0;
-    }else
-    {
         clearGrid();
-        kill(pid_child, SIGQUIT);
+        gridStatus = STATUS_CLEANED;
+        if(*childStatus == STATUS_OPEN)
+        { 
+            kill(pid_child, SIGQUIT);
+        }
     }
     
-    
+    //set the spinner to 0
+   	gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR(main_progressBar), (gdouble) 0 );
     
     
     //creating a child process for playing the midi
     pid_child = fork();
+
+    // set the status to open
+    *childStatus = STATUS_OPEN;
+
     if(pid_child == 0)
     {
         //FIRST CHILD
         signal(SIGQUIT, sigquit_child);
         sleep(1);
         openMidiFileAndCreateEventCashe(gtk_entry_get_text(GTK_ENTRY(main_textEntry)), pid_parent);
-        //start playing the midi file
+
+        //populate the grid
         kill(*pid_parent, DONEPARSING);
+
+        //start playing the midi file
         playMidiFile(playStatus, pid_parent);
-  
-        
+
+        *childStatus = STATUS_CLOSE;
+        exit(EXIT_SUCCESS);   
      
     }else if(pid_child > 0)
     {
@@ -187,6 +209,7 @@ void on_main_fileChooser_clicked(GtkButton *f)
         signal(DONEPARSING, signaldoneparsing);
         signal(FILENOTFOUND, sigfilenotfound);
         signal(GENERALERROR, siggeneralerror);
+        signal(SIGSETFRAC, sigsetfraction);
         return;
     }else
     {
@@ -201,8 +224,10 @@ void on_main_fileChooser_clicked(GtkButton *f)
 //signals
 void sigquit_child() 
 {
+
+    gtk_spinner_stop (GTK_SPINNER(main_spinner));
+    *childStatus = STATUS_CLOSE;
     on_midiClosed();
-    gtk_spinner_stop (GTK_SPINNER(main_spinner)); 
     exit(0); 
 }
 
@@ -212,6 +237,8 @@ void signaldoneparsing()
     if (f1 == NULL ) 
     {
         showDialog("File cachedEvents.txt not found!\n");
+        if(*childStatus == STATUS_OPEN)
+            kill(pid_child, SIGQUIT);
         return;
     }
 
@@ -226,7 +253,7 @@ void signaldoneparsing()
 
     main_gridButtonCount = 0;
     main_gridButton = calloc(lineCount, sizeof(GtkWidget *));
-
+    gridStatus = STATUS_UNCLEAN;
     while (!feof(f1)) 
     {
         fgets(rowStr, 1024, f1);
@@ -247,6 +274,7 @@ void signaldoneparsing()
 
     }
     fclose(f1);
+    gridStatus = STATUS_UNCLEAN;
     gtk_widget_show_all(main_window);
     gtk_spinner_stop (GTK_SPINNER(main_spinner));
 
@@ -255,43 +283,73 @@ void signaldoneparsing()
 
 void sigcorrupt() 
 {
-    kill(pid_child, SIGQUIT);
+    if(*childStatus == STATUS_OPEN)
+            kill(pid_child, SIGQUIT);
     showDialog("MIDI file is corrupted!");
+    gtk_spinner_stop (GTK_SPINNER(main_spinner));
+
 }
 
 void sigtype2() 
 {
-    kill(pid_child, SIGQUIT);
+    if(*childStatus == STATUS_OPEN)
+            kill(pid_child, SIGQUIT);
+    gtk_spinner_stop (GTK_SPINNER(main_spinner));
     showDialog("MIDI file is type 2 which is not supported!");
 }
 
 void sigendoftrack() 
 {
-    kill(pid_child, SIGQUIT);
+    if(*childStatus == STATUS_OPEN)
+            kill(pid_child, SIGQUIT);
+    gtk_spinner_stop (GTK_SPINNER(main_spinner));
     showDialog("There seems to be a problem with the End of Track event!");
 }
 void sigfilenotfound() 
 {
-    kill(pid_child, SIGQUIT);
+    if(*childStatus == STATUS_OPEN)
+            kill(pid_child, SIGQUIT);
+    gtk_spinner_stop (GTK_SPINNER(main_spinner));
     showDialog("Coudln't open the file!");
 }
 
 void siggeneralerror() 
 {
-    kill(pid_child, SIGQUIT);
+    if(*childStatus == STATUS_OPEN)
+            kill(pid_child, SIGQUIT);
+    gtk_spinner_stop (GTK_SPINNER(main_spinner));
     showDialog("An error occured while parsing the file!");
+}
+
+void sigsetfraction()
+{
+	gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR(main_progressBar), (gdouble) *progressBarFraction );
+    
 }
 
 //menu buttons
 void on_menu_new_activate(GtkMenuItem *m)
 {
-    
+
+    if(*childStatus == STATUS_OPEN)
+            kill(pid_child, SIGQUIT);
+
+
+    if(gridStatus == STATUS_UNCLEAN)
+    { 
+        clearGrid();
+        gridStatus = STATUS_CLEANED;
+    }
+    //set the spinner to 0
+   	gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR(main_progressBar), (gdouble) 0 );
+
+    gtk_entry_set_text(GTK_ENTRY(main_textEntry), "");
 }
 
 void on_menu_quit_activate(GtkMenuItem *m)
 {
-    kill(pid_child, SIGQUIT);
-    on_midiClosed();
+    if(*childStatus == STATUS_OPEN)
+            kill(pid_child, SIGQUIT);
     exit(EXIT_SUCCESS);
 }
 
@@ -320,6 +378,10 @@ void showDialog(char str[])
                                  "%s", str);
 	gtk_dialog_run (GTK_DIALOG (dialog));
 	gtk_widget_destroy (dialog);
+
+    //set the spinner to 0
+   	gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR(main_progressBar), (gdouble) 0 );
+
 }
 
 ////////////////////
@@ -335,6 +397,6 @@ void clearGrid()
 }
 //progress bar
 
-	gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR(main_progressBar), (gdouble) 1.00 );
+	//gtk_progress_bar_set_fraction (GTK_PROGRESS_BAR(main_progressBar), (gdouble) 1.00 );
 
     // gtk_widget_set_sensitive(main_play, FALSE);

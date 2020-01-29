@@ -14,6 +14,9 @@
 //uncomment this and the related function to play a song from intro-song.txt
 //#include "intro.h"
 
+//external variables
+extern double *progressBarFraction;
+
 //global flags
 GuiStatus midiFileFlagStatus = STATUS_CLOSE;
 GuiStatus cacheFileFlagStatus = STATUS_CLOSE;
@@ -40,7 +43,7 @@ void openMidiFileAndCreateEventCashe(char *filePath, pid_t *ppid)
     void ei_ui_fread(unsigned int *ptr, size_t size, size_t n, FILE *streamPtr);
     Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOfNotes, MidiCurrentStatus *, FILE *);
     void cleanUpAllocatedSpace(MidiTrack *tracks,unsigned int numberOfTracks ,NoteSequence *noteSequence);
-
+    
     // _+_+_+_+_+( PHASE I )+_+_+_+_+_
     // Play the intro song using the intro.c source file 
     // uncomment the include path
@@ -165,7 +168,7 @@ void playMidiFile(GuiStatus *playStatus, pid_t *ppid)
     // _+_+_+_+_+( CLEAN UP )+_+_+_+_+_
     cleanUpAllocatedSpace(tracks,midiHeader.tracks ,noteSequence);
     memoryCleanFlagStatus = STATUS_CLEANED;
-    exit(EXIT_SUCCESS);
+    return;
 
 }
 ////////////////////////////////////////
@@ -893,35 +896,37 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
             
         }
         
+        if(trackTotalBytes <= trackSize)
+        { 
+            //increment the counter for midiEvents array
+            trackEventCount++;
 
-        //increment the counter for midiEvents array
-        trackEventCount++;
-
-        //check the count and buffer, if it is realloc it
-        if(trackEventCount == trackEventCountBuffer)
-        {
-            trackEventCountBuffer *=3;
-            MidiEvent *dummyptr;
-            dummyptr = realloc(midiEvents, (trackEventCountBuffer) * sizeof(MidiEvent));
-            if(dummyptr == NULL)
+            //check the count and buffer, if it is realloc it
+            if(trackEventCount == trackEventCountBuffer)
             {
-                kill(*pid_parent, GENERALERROR);
+                trackEventCountBuffer *=3;
+                MidiEvent *dummyptr;
+                dummyptr = realloc(midiEvents, (trackEventCountBuffer) * sizeof(MidiEvent));
+                if(dummyptr == NULL)
+                {
+                    kill(*pid_parent, GENERALERROR);
+                    
+                }else
+                {
+                    midiEvents = dummyptr;
+                }
                 
-            }else
-            {
-                midiEvents = dummyptr;
+
             }
-            
+            //read next delta time
+            deltaTime = readVariableLengthValue(midiFile);
 
+            midiEvents[trackEventCount].deltaTime = deltaTime;
+
+            // the next event code
+            ei_ui_fread(&eventCode, 1, 1, midiFile);
+            trackTotalBytes += 1;
         }
-        //read next delta time
-        deltaTime = readVariableLengthValue(midiFile);
-
-        midiEvents[trackEventCount].deltaTime = deltaTime;
-
-        // the next event code
-        ei_ui_fread(&eventCode, 1, 1, midiFile);
-        trackTotalBytes += 1;
     }
     //if the program reaches this part it means that it hasn't found end of track event within the bounds of track length
     kill(*pid_parent, ENDOFTRACKERROR);
@@ -1145,6 +1150,8 @@ void playMidiNotes(Note *notesArray, size_t size, GuiStatus *playStatus)
             delay((notesArray + i)->delay);
             beep((notesArray + i)->frequency, (notesArray + i)->length + 130);
             i+=1;
+            *progressBarFraction = (double) i/size;
+            kill(*pid_parent, SIGSETFRAC);
         }
         
     }

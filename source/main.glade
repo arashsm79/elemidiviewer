@@ -5,7 +5,9 @@
   <object class="GtkWindow" id="main_window">
     <property name="height_request">410</property>
     <property name="can_focus">False</property>
-    <child>
+    <property name="title" translatable="yes">Ele Midi Viewer</property>
+    <property name="icon_name">audio-card</property>
+    <child type="titlebar">
       <placeholder/>
     </child>
     <child>
@@ -178,6 +180,7 @@
                         <property name="can_focus">False</property>
                         <property name="use_underline">True</property>
                         <property name="use_stock">True</property>
+                        <signal name="activate" handler="on_menu_new_activate" swapped="no"/>
                       </object>
                     </child>
                     <child>
