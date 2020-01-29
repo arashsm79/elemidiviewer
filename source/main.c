@@ -54,12 +54,10 @@ GuiStatus gridStatus = STATUS_CLEANED;
 //signals
 void sigquit_child();
 void sigcorrupt();
-void sigtype2();
-void sigendoftrack();
-void sigfilenotfound();
-void siggeneralerror();
 void signaldoneparsing();
 void sigsetfraction();
+Signal *errorType;
+
 
 
 void on_destroy();
@@ -107,6 +105,10 @@ int main(int argc, char *argv[]) {
 
     progressBarFraction = mmap(NULL, sizeof(pid_t *), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
         *progressBarFraction = 0;
+
+    errorType = mmap(NULL, sizeof(Signal *), PROT_READ | PROT_WRITE, MAP_SHARED | MAP_ANONYMOUS, -1, 0);
+        *errorType = NOERROR;
+
 
 
     //setting up css
@@ -191,7 +193,7 @@ void on_main_fileChooser_clicked(GtkButton *f)
         openMidiFileAndCreateEventCashe(gtk_entry_get_text(GTK_ENTRY(main_textEntry)), pid_parent);
 
         //populate the grid
-        kill(*pid_parent, DONEPARSING);
+        kill(*pid_parent, SIGUSR1);
 
         //start playing the midi file
         playMidiFile(playStatus, pid_parent);
@@ -203,13 +205,10 @@ void on_main_fileChooser_clicked(GtkButton *f)
     {
         //parent (main)
         *pid_parent = getpid();
-        signal(CORRUPTMIDI, sigcorrupt);
-        signal(ENDOFTRACKERROR, sigendoftrack);
-        signal(TYPE2MIDI, sigtype2);
-        signal(DONEPARSING, signaldoneparsing);
-        signal(FILENOTFOUND, sigfilenotfound);
-        signal(GENERALERROR, siggeneralerror);
-        signal(SIGSETFRAC, sigsetfraction);
+        signal(SIGUSR1, signaldoneparsing);
+        signal(SIGUSR2, sigsetfraction);
+        signal(SIGILL, sigcorrupt);
+
         return;
     }else
     {
@@ -233,6 +232,12 @@ void sigquit_child()
 
 void signaldoneparsing()
 {
+    if(*errorType == SIGSINOTE)
+    {
+
+        showDialog("This file contains notes that have to be played at the same time\n results may be unexpected!");
+        
+    }
     FILE *f1 = fopen("cachedEvents.txt", "r");
     if (f1 == NULL ) 
     {
@@ -283,43 +288,51 @@ void signaldoneparsing()
 
 void sigcorrupt() 
 {
-    if(*childStatus == STATUS_OPEN)
-            kill(pid_child, SIGQUIT);
-    showDialog("MIDI file is corrupted!");
-    gtk_spinner_stop (GTK_SPINNER(main_spinner));
+    switch (*errorType)
+    {
+    case TYPE2MIDI:
+        
+        if(*childStatus == STATUS_OPEN)
+                kill(pid_child, SIGQUIT);
+        showDialog("MIDI file is type 2 which is not supported!");
+        gtk_spinner_stop (GTK_SPINNER(main_spinner));
+        break;
+    case CORRUPTMIDI:
+        
+        if(*childStatus == STATUS_OPEN)
+                kill(pid_child, SIGQUIT);
+        showDialog("MIDI file is corrupted!");
+        gtk_spinner_stop (GTK_SPINNER(main_spinner));
+        break;
+    case ENDOFTRACKERROR:
+        
+        if(*childStatus == STATUS_OPEN)
+                kill(pid_child, SIGQUIT);
+        showDialog("There seems to be a problem with the End of Track event!");
+        gtk_spinner_stop (GTK_SPINNER(main_spinner));
+        break;
+    case GENERALERROR:
+        
+        if(*childStatus == STATUS_OPEN)
+                kill(pid_child, SIGQUIT);
+        showDialog("An error occured while parsing the file!");
+        gtk_spinner_stop (GTK_SPINNER(main_spinner));
+        break;
+    case FILENOTFOUND:
+
+        if(*childStatus == STATUS_OPEN)
+                kill(pid_child, SIGQUIT);
+        showDialog("Coudln't open the file!");
+        gtk_spinner_stop (GTK_SPINNER(main_spinner));
+
+        break;
+    
+    default:
+        break;
+    }
 
 }
 
-void sigtype2() 
-{
-    if(*childStatus == STATUS_OPEN)
-            kill(pid_child, SIGQUIT);
-    gtk_spinner_stop (GTK_SPINNER(main_spinner));
-    showDialog("MIDI file is type 2 which is not supported!");
-}
-
-void sigendoftrack() 
-{
-    if(*childStatus == STATUS_OPEN)
-            kill(pid_child, SIGQUIT);
-    gtk_spinner_stop (GTK_SPINNER(main_spinner));
-    showDialog("There seems to be a problem with the End of Track event!");
-}
-void sigfilenotfound() 
-{
-    if(*childStatus == STATUS_OPEN)
-            kill(pid_child, SIGQUIT);
-    gtk_spinner_stop (GTK_SPINNER(main_spinner));
-    showDialog("Coudln't open the file!");
-}
-
-void siggeneralerror() 
-{
-    if(*childStatus == STATUS_OPEN)
-            kill(pid_child, SIGQUIT);
-    gtk_spinner_stop (GTK_SPINNER(main_spinner));
-    showDialog("An error occured while parsing the file!");
-}
 
 void sigsetfraction()
 {

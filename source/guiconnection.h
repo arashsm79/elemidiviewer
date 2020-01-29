@@ -19,16 +19,13 @@ typedef enum {
 } GuiStatus;
 
 typedef enum {
-
+    NOERROR,
     TYPE2MIDI,
     CORRUPTMIDI,
     ENDOFTRACKERROR,
     FILENOTFOUND,
     GENERALERROR,
-    DONEPARSING,
-    SIGPAUSE,
-    SIGRESUME,
-    SIGSETFRAC
+    SIGSINOTE
 
 } Signal;
 

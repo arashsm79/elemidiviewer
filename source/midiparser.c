@@ -15,6 +15,7 @@
 //#include "intro.h"
 
 //external variables
+extern Signal *errorType;
 extern double *progressBarFraction;
 
 //global flags
@@ -33,6 +34,10 @@ FILE *midiFile;
 MidiHeader midiHeader;
 FILE *midiEventCacheFile;
 unsigned int trackTotalBytes = 0;
+unsigned int totalNotes = 0;
+unsigned int totalNotesPlayed = 0;
+unsigned int noteOnWithZeroDeltaTime = 0;
+unsigned short firstTimeEncounteringSimultaneous = 1;
 
 pid_t *pid_parent;
 //opens the given midi file and creates an event cache
@@ -56,7 +61,8 @@ void openMidiFileAndCreateEventCashe(char *filePath, pid_t *ppid)
     midiFile = fopen(filePath, "rb");
     if(midiFile == NULL)
     {
-        kill(*pid_parent, FILENOTFOUND);
+        *errorType = FILENOTFOUND;
+        kill(*pid_parent, SIGILL);
         
     }
     midiFileFlagStatus = STATUS_OPEN;
@@ -66,7 +72,8 @@ void openMidiFileAndCreateEventCashe(char *filePath, pid_t *ppid)
 
     if(midiEventCacheFile == NULL)
     {
-        kill(*pid_parent, FILENOTFOUND);
+        *errorType = FILENOTFOUND;
+        kill(*pid_parent, SIGILL);
         
     }
     cacheFileFlagStatus = STATUS_OPEN;
@@ -105,7 +112,8 @@ void openMidiFileAndCreateEventCashe(char *filePath, pid_t *ppid)
     noteSequence = calloc(midiHeader.tracks, sizeof(NoteSequence));
 
     if(tracks == NULL || noteSequence == NULL){ 
-        kill(*pid_parent, GENERALERROR);
+            *errorType = GENERALERROR;
+            kill(*pid_parent, SIGILL);
         }
 
 
@@ -118,7 +126,8 @@ void openMidiFileAndCreateEventCashe(char *filePath, pid_t *ppid)
         chunkID[5] = '\0';
         if(strstr(chunkID, "MTrk") == NULL)
         {
-            kill(*pid_parent, CORRUPTMIDI);
+            *errorType = CORRUPTMIDI;
+            kill(*pid_parent, SIGILL);
             
         }
 
@@ -158,6 +167,11 @@ void playMidiFile(GuiStatus *playStatus, pid_t *ppid)
     void cleanUpAllocatedSpace(MidiTrack *tracks,unsigned int numberOfTracks ,NoteSequence *noteSequence);
     // _+_+_+_+_+( PHASE IV )+_+_+_+_+_
     pid_parent = ppid;
+
+    for(int i = 0; i < midiHeader.tracks; i++)
+    {
+        totalNotes += noteSequence[i].numberOfNotes;
+    }
 
     for(int i = 0; i < midiHeader.tracks; i++)
     {
@@ -519,6 +533,19 @@ Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOf
                     noteArray[noteCount].velocity = 0;
 
                 }
+
+
+                // this section checks whether this file contains notes that has to be played at the same time
+                if(midiEvents[i].deltaTime == 0)
+                {
+                    noteOnWithZeroDeltaTime++;
+                }
+                if(noteOnWithZeroDeltaTime > 1 && firstTimeEncounteringSimultaneous)
+                {
+                    *errorType = SIGSINOTE;
+                    kill(*pid_parent, SIGILL);
+                    firstTimeEncounteringSimultaneous = 0;
+                }
                 
                 //print the current event
                 fprintf(midiEventCacheFile, " %-20s -> #%u V:%u", "Note On", midiEvents[i].channelEvent.param1, midiEvents[i].channelEvent.param2);
@@ -744,7 +771,8 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
 
                     if(trackTotalBytes != trackSize)
                     {
-                        kill(*pid_parent, ENDOFTRACKERROR);
+                        *errorType = ENDOFTRACKERROR;
+                        kill(*pid_parent, SIGILL);
                         
                     }
 
@@ -909,7 +937,8 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
                 dummyptr = realloc(midiEvents, (trackEventCountBuffer) * sizeof(MidiEvent));
                 if(dummyptr == NULL)
                 {
-                    kill(*pid_parent, GENERALERROR);
+                    *errorType = GENERALERROR;
+                    kill(*pid_parent, SIGILL);
                     
                 }else
                 {
@@ -929,7 +958,8 @@ MidiEvent *readTrackEvents(FILE *midiFile, size_t *numberOfEvents, size_t *numbe
         }
     }
     //if the program reaches this part it means that it hasn't found end of track event within the bounds of track length
-    kill(*pid_parent, ENDOFTRACKERROR);
+    *errorType = ENDOFTRACKERROR;
+    kill(*pid_parent, SIGILL);
     
 
 }
@@ -1009,7 +1039,8 @@ void readHeaderChunk(MidiHeader *midiHeader, FILE *fptr)
     midiHeader->chunkType[5] = '\0';
     if(strstr(midiHeader->chunkType, "MThd") == NULL)
     {
-        kill(*pid_parent, CORRUPTMIDI);
+        *errorType = CORRUPTMIDI;
+        kill(*pid_parent, SIGILL);
         
     }
     
@@ -1019,7 +1050,8 @@ void readHeaderChunk(MidiHeader *midiHeader, FILE *fptr)
 
     if(midiHeader->length != 6)
     {
-        kill(*pid_parent, CORRUPTMIDI);
+        *errorType = CORRUPTMIDI;
+        kill(*pid_parent, SIGILL);
         
         
     }
@@ -1028,14 +1060,16 @@ void readHeaderChunk(MidiHeader *midiHeader, FILE *fptr)
     ei_ui_fread(&(midiHeader->format), 1, 2, fptr);
     if(midiHeader->format < 0 || midiHeader->format > 2)
     {
-        kill(*pid_parent, CORRUPTMIDI);
+        *errorType = CORRUPTMIDI;
+        kill(*pid_parent, SIGILL);
         
     }
     //read 16 bits
     ei_ui_fread(&(midiHeader->tracks), 1, 2, fptr);
     if(midiHeader->tracks < 1 || midiHeader->tracks > 65535)
     {
-        kill(*pid_parent, CORRUPTMIDI);
+        *errorType = CORRUPTMIDI;
+        kill(*pid_parent, SIGILL);
         
     }
     //read 16 bits
@@ -1073,7 +1107,8 @@ void readHeaderChunk(MidiHeader *midiHeader, FILE *fptr)
     // a controll statement for header chunks larger than 6 bytes
     if(midiHeader->length > 6)
     {
-        kill(*pid_parent, GENERALERROR);
+        *errorType = GENERALERROR;
+        kill(*pid_parent, SIGILL);
         
         int numberOfBytesOfAdditionalInformationInHeader = midiHeader->length - 6;
         int additionalInformationInHeader;
@@ -1142,16 +1177,21 @@ float turnMidiNoteNumberToFrequency(unsigned int noteNumber)
 void playMidiNotes(Note *notesArray, size_t size, GuiStatus *playStatus)
 {
     void delay(int milliseconds);
+
     int i = 0;
     while(i < size)
     { 
         if(*playStatus == STATUS_PLAY)
-        { 
-            delay((notesArray + i)->delay);
-            beep((notesArray + i)->frequency, (notesArray + i)->length + 130);
+        {
+            if((notesArray + i)->delay != 0)
+            { 
+                delay((notesArray + i)->delay);
+                beep((notesArray + i)->frequency, (notesArray + i)->length + 130);
+            }
             i+=1;
-            *progressBarFraction = (double) i/size;
-            kill(*pid_parent, SIGSETFRAC);
+            totalNotesPlayed +=1;
+            *progressBarFraction = (double) totalNotesPlayed/totalNotes;
+            kill(*pid_parent, SIGUSR2);
         }
         
     }
