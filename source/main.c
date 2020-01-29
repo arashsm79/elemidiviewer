@@ -111,7 +111,7 @@ int main(int argc, char *argv[]) {
 
     //setting up css
     GtkCssProvider *css_provider = gtk_css_provider_new();
-    gtk_css_provider_load_from_data(css_provider, "button#errbtn { color: red; }", -1, NULL);
+    gtk_css_provider_load_from_path(css_provider, "gtk-dark.css", NULL);
     gtk_style_context_add_provider_for_screen(gdk_screen_get_default(),
                                GTK_STYLE_PROVIDER(css_provider),
                                GTK_STYLE_PROVIDER_PRIORITY_USER);
