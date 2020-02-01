@@ -30,4 +30,9 @@ Dependencies:
   
   here are some screen shots:
   
+ ![Alt text](/screenshots/2.png?raw=true "Error checking features")
 ![Alt text](/screenshots/1.png?raw=true "Main Window")
+![Alt text](/screenshots/3.png?raw=true "Progress Bar")
+![Alt text](/screenshots/4.png?raw=true "Error checking features")
+![Alt text](/screenshots/5.png?raw=true "Error checking features")
+
