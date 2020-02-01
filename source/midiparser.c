@@ -258,6 +258,7 @@ Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOf
     Note *noteArray = calloc(numberOfNotes, sizeof(Note));
     size_t noteCount = 0;
 
+    unsigned short isFirstNoteOn = 1;
     // the elapsed time since the first event in ticks
     unsigned int playTime;
 
@@ -533,10 +534,9 @@ Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOf
                     noteArray[noteCount].velocity = 0;
 
                 }
-
-
+                                
                 // this section checks whether this file contains notes that has to be played at the same time
-                if(midiEvents[i].deltaTime == 0)
+                if(firstTimeEncounteringSimultaneous && midiEvents[i].deltaTime == 0 )
                 {
                     noteOnWithZeroDeltaTime++;
                 }
@@ -546,6 +546,7 @@ Note *composeNotes(MidiEvent *midiEvents, size_t numberOfEvents, size_t numberOf
                     kill(*pid_parent, SIGILL);
                     firstTimeEncounteringSimultaneous = 0;
                 }
+
                 
                 //print the current event
                 fprintf(midiEventCacheFile, " %-20s -> #%u V:%u", "Note On", midiEvents[i].channelEvent.param1, midiEvents[i].channelEvent.param2);
@@ -1183,11 +1184,11 @@ void playMidiNotes(Note *notesArray, size_t size, GuiStatus *playStatus)
     { 
         if(*playStatus == STATUS_PLAY)
         {
-            if((notesArray + i)->delay != 0)
-            { 
-                delay((notesArray + i)->delay);
-                beep((notesArray + i)->frequency, (notesArray + i)->length + 130);
-            }
+            
+                 
+            delay((notesArray + i)->delay);
+            beep((notesArray + i)->frequency, (notesArray + i)->length + 130);
+            
             i+=1;
             totalNotesPlayed +=1;
             *progressBarFraction = (double) totalNotesPlayed/totalNotes;
