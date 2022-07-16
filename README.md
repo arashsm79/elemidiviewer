@@ -1,4 +1,4 @@
-# Ela Midi Viewer
+# Ele Midi Viewer
 > A Simple midi viewer with minimum playing capabilities
 
 A MIDI file viewer written in C using gtk.
